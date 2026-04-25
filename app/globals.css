@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #0b0d12;
+  color: #e6e8ee;
+}
+
+body {
+  font-feature-settings: "ss01", "tnum";
+}
+
+/* Subtle scrollbar in panels */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a3142;
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Numeric tabular alignment everywhere */
+.num {
+  font-variant-numeric: tabular-nums;
+}
