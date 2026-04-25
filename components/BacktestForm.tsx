@@ -10,6 +10,7 @@ import { classNames } from "@/lib/format";
 import { CompareChart } from "./CompareChart";
 import { CompareTable } from "./CompareTable";
 import { ResultPanel } from "./ResultPanel";
+import { TickerAutocomplete } from "./TickerAutocomplete";
 
 type PeriodChoice = "10y" | "ny" | "inception" | "custom";
 
@@ -194,15 +195,13 @@ export function BacktestForm() {
             label="티커 (쉼표로 구분, 최대 10개)"
             hint="미국 종목은 그대로(예: AAPL, VOO, QQQ). 한국은 .KS(코스피) / .KQ(코스닥) 접미사 — 예: 005930.KS(삼성전자), 069500.KS(KODEX 200)."
           >
-            <input
-              type="text"
+            <TickerAutocomplete
+              mode="multi"
               value={tickersRaw}
-              onChange={(e) => setTickersRaw(e.target.value)}
+              onChange={setTickersRaw}
               placeholder="AAPL, MSFT, SPY  또는  005930.KS, 069500.KS"
-              className={inputCls}
-              autoCapitalize="characters"
-              autoCorrect="off"
-              spellCheck={false}
+              inputClassName={`${inputCls} font-mono uppercase`}
+              inputId="bt-tickers"
             />
             <div className="mt-2 flex flex-wrap gap-1.5">
               {[

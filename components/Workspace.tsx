@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { BacktestForm } from "@/components/BacktestForm";
+import { SentimentWidget } from "@/components/SentimentWidget";
 import { SwingDayWorkspace } from "@/components/SwingDayWorkspace";
 import { classNames } from "@/lib/format";
 
@@ -36,6 +37,7 @@ export function Workspace() {
   return (
     <div className="space-y-6">
       <ModeTabs mode={mode} setMode={setMode} />
+      <SentimentWidget />
       {mode === "backtest" ? <BacktestForm /> : <SwingDayWorkspace />}
     </div>
   );

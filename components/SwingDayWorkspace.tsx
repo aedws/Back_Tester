@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { AdvancedChart, type ChartPerspective } from "@/components/AdvancedChart";
+import { TickerAutocomplete } from "@/components/TickerAutocomplete";
 import { classNames } from "@/lib/format";
 
 type Mode = "swing" | "day";
@@ -90,21 +91,16 @@ export function SwingDayWorkspace() {
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <div className="flex flex-1 items-stretch gap-2">
-            <input
-              type="text"
+            <TickerAutocomplete
+              mode="single"
               value={tickerInput}
-              onChange={(e) => setTickerInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  applyTicker(tickerInput);
-                }
-              }}
+              onChange={setTickerInput}
+              onSubmit={(v) => applyTicker(v)}
+              onPickSymbol={(s) => applyTicker(s)}
               placeholder="티커 (예: AAPL, 005930.KS)"
-              autoCapitalize="characters"
-              autoCorrect="off"
-              spellCheck={false}
-              className="w-full max-w-[260px] rounded-md border border-border bg-bg-subtle px-3 py-2 text-sm font-mono uppercase text-ink placeholder:text-ink-dim outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
+              className="w-full max-w-[260px]"
+              inputClassName="w-full rounded-md border border-border bg-bg-subtle px-3 py-2 text-sm font-mono uppercase text-ink placeholder:text-ink-dim outline-none transition focus:border-accent focus:ring-2 focus:ring-accent/20"
+              inputId="swing-ticker"
             />
             <button
               type="button"
