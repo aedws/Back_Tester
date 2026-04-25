@@ -13,11 +13,8 @@ import {
   type DividendAnalysis,
   type ReinvestComparison,
 } from "@/lib/dividends";
-import {
-  fetchPrices,
-  fetchQuoteSummary,
-  type FetchMode,
-} from "@/lib/yahoo";
+import { fetchPricesCached } from "@/lib/priceCache";
+import { fetchQuoteSummary, type FetchMode } from "@/lib/yahoo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -167,14 +164,14 @@ export async function POST(req: Request) {
         // parallel. The inception series powers the sliding distribution;
         // the user's slice powers the headline backtest.
         const [fetched, inception] = await Promise.all([
-          fetchPrices({
+          fetchPricesCached({
             ticker,
             mode: body.mode,
             years: body.years,
             start: body.start,
             end: body.end,
           }),
-          fetchPrices({ ticker, mode: "inception" }).catch(() => null),
+          fetchPricesCached({ ticker, mode: "inception" }).catch(() => null),
         ]);
         const result = runDca(ticker, fetched.prices, {
           unitMode,
@@ -276,7 +273,7 @@ export async function POST(req: Request) {
   const benchPromise: Promise<PerTickerOutcome | null> = includeBenchmark
     ? (async () => {
         try {
-          const { prices } = await fetchPrices({
+          const { prices } = await fetchPricesCached({
             ticker: benchSymbol,
             mode: body.mode,
             years: body.years,

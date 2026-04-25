@@ -362,6 +362,7 @@ export interface QuoteSummary {
 
 const QS_CACHE = new Map<string, { at: number; data: QuoteSummary | null }>();
 const QS_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours; ETF metadata rarely changes.
+const QS_TTL_S = Math.ceil(QS_TTL_MS / 1000);
 
 export async function fetchQuoteSummary(
   ticker: string,
@@ -370,6 +371,18 @@ export async function fetchQuoteSummary(
   if (!sym) return null;
   const cached = QS_CACHE.get(sym);
   if (cached && Date.now() - cached.at < QS_TTL_MS) return cached.data;
+
+  // L2 cache (KV) — survives cold starts. Lazy import to avoid pulling
+  // upstash into bundles that don't need it (e.g. test environments).
+  const { kvGetJson, kvSetJson } = await import("./cache");
+  const kvKey = `quoteSummary:v1:${sym}`;
+  const persisted = await kvGetJson<{ at: number; data: QuoteSummary | null }>(
+    kvKey,
+  );
+  if (persisted && Date.now() - persisted.at < QS_TTL_MS) {
+    QS_CACHE.set(sym, persisted);
+    return persisted.data;
+  }
 
   try {
     const r = (await yf.quoteSummary(sym, {
@@ -405,10 +418,16 @@ export async function fetchQuoteSummary(
         toFiniteOrNull(r.summaryDetail?.dividendRate) ??
         toFiniteOrNull(r.summaryDetail?.trailingAnnualDividendRate),
     };
-    QS_CACHE.set(sym, { at: Date.now(), data: summary });
+    const entry = { at: Date.now(), data: summary };
+    QS_CACHE.set(sym, entry);
+    void kvSetJson(kvKey, entry, QS_TTL_S).catch(() => undefined);
     return summary;
   } catch {
-    QS_CACHE.set(sym, { at: Date.now(), data: null });
+    const entry = { at: Date.now(), data: null };
+    QS_CACHE.set(sym, entry);
+    // Cache miss for shorter window — null result might be a transient
+    // Yahoo failure rather than a permanent absence.
+    void kvSetJson(kvKey, entry, 60 * 30).catch(() => undefined);
     return null;
   }
 }

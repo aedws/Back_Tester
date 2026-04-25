@@ -96,6 +96,32 @@ vercel --prod       # 프로덕션 배포
 `app/api/backtest/route.ts` 상단의 `export const maxDuration = 60` 으로 60초까지
 허용하도록 설정해 두었습니다(Hobby 플랜 기준 최대치). 보통 한 번에 1~3초이면 끝납니다.
 
+### (선택) Vercel KV / Upstash Redis 가격 캐시
+
+가격 시계열을 영구 캐시해서 Yahoo 호출을 90% 이상 줄일 수 있습니다. **환경 변수만
+설정하면 자동 활성화**되며, 없으면 그냥 매번 직접 Yahoo를 호출합니다(코드 변경 불필요).
+
+1. **Vercel Marketplace** → Storage → "Upstash for Redis" 추가 (무료 티어 충분).
+2. 프로젝트의 환경 변수에 다음 값이 자동 주입됩니다:
+   - `KV_REST_API_URL`
+   - `KV_REST_API_TOKEN`
+3. 재배포하면 끝. 헬스체크용 헤더는 별도로 노출하지 않습니다 (필요 시 `lib/cache.ts` 참조).
+
+또는 직접 Upstash 콘솔에서 DB를 만든 뒤 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`
+을 넣어도 동작합니다.
+
+캐시되는 항목 (모두 `lib/priceCache.ts`, `lib/cache.ts` 가 처리):
+
+| 키 | TTL | 내용 |
+| --- | --- | --- |
+| `prices:v1:<TICKER>` | ∞ (증분 갱신) | 인셉션부터 현재까지의 일별 종가 + 배당 + 분할. 재요청 시 마지막 캐시 일자 다음 ±7일만 Yahoo에서 받아 머지 |
+| `chart:v1:<ticker>:<interval>:<rangeDays>:<reg>` | 60s ~ 1h | 상세 차트 응답 (interval에 따라 TTL 다름) |
+| `market:quotes:v1` | 30s | 상단 마켓 마퀴 |
+| `sentiment:v1` | 5m | Fear & Greed |
+| `quoteSummary:v1:<TICKER>` | 6h | 회사명·자산종류·배당률 등 메타 |
+
+콜드 스타트가 발생해도 KV가 살아있어 두 번째 요청부터는 거의 모두 캐시 히트입니다.
+
 ## 폴더 구조
 
 ```

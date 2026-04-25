@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { kvGetJson, kvSetJson } from "@/lib/cache";
 import { logLinearChannel, type LogChannelResult } from "@/lib/regression";
 import {
   INTERVAL_PLAN,
@@ -14,6 +15,22 @@ import { yf } from "@/lib/yahoo";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
+
+/**
+ * Cache TTL per interval bucket. Intraday data must refresh frequently;
+ * daily+ data is happy with a longer TTL since Yahoo only updates these
+ * once per session.
+ */
+const CACHE_TTL_S: Record<string, number> = {
+  "1m": 60,
+  "5m": 60,
+  "15m": 120,
+  "30m": 180,
+  "60m": 300,
+  "1d": 600,
+  "1wk": 1800,
+  "1mo": 3600,
+};
 
 const MS_PER_DAY = 86_400_000;
 
@@ -70,6 +87,16 @@ export async function GET(req: Request) {
   const period2 = new Date();
   const period1 = new Date(period2.getTime() - rangeDays * MS_PER_DAY);
 
+  // KV cache: identical request → cached response (returns inside TTL).
+  const cacheKey = `chart:v1:${ticker}:${intervalParam}:${rangeDays}:${
+    regressionParam === "log" ? "reg" : "noreg"
+  }`;
+  const ttl = CACHE_TTL_S[yahooInterval] ?? 300;
+  const cached = await kvGetJson<unknown>(cacheKey);
+  if (cached && typeof cached === "object") {
+    return NextResponse.json(cached);
+  }
+
   try {
     const chart = await yf.chart(ticker, {
       period1,
@@ -123,7 +150,7 @@ export async function GET(req: Request) {
       );
     }
 
-    return NextResponse.json({
+    const payload = {
       ticker,
       interval: intervalParam,
       yahooInterval,
@@ -133,7 +160,9 @@ export async function GET(req: Request) {
       shortName: chartMeta(chart, "shortName") ?? chartMeta(chart, "longName"),
       regularMarketPrice: chartMeta(chart, "regularMarketPrice"),
       regressionChannel,
-    });
+    };
+    void kvSetJson(cacheKey, payload, ttl).catch(() => undefined);
+    return NextResponse.json(payload);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 502 });

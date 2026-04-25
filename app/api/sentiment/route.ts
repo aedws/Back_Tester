@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { kvGetJson, kvSetJson } from "@/lib/cache";
 import {
   aggregate,
   junkComponent,
@@ -22,17 +23,37 @@ interface CacheEntry {
 
 // 5-minute server cache. Sentiment changes slowly; this also keeps us well
 // inside Yahoo's rate budgets.
-let CACHE: CacheEntry | null = null;
+const KV_KEY = "sentiment:v1";
 const TTL_MS = 5 * 60_000;
+const TTL_S = Math.ceil(TTL_MS / 1000);
 const MS_PER_DAY = 86_400_000;
+
+let MEM_CACHE: CacheEntry | null = null;
+
+async function readCache(): Promise<CacheEntry | null> {
+  const now = Date.now();
+  if (MEM_CACHE && now - MEM_CACHE.ts < TTL_MS) return MEM_CACHE;
+  const persisted = await kvGetJson<CacheEntry>(KV_KEY);
+  if (persisted && now - persisted.ts < TTL_MS) {
+    MEM_CACHE = persisted;
+    return persisted;
+  }
+  return null;
+}
+
+async function writeCache(entry: CacheEntry): Promise<void> {
+  MEM_CACHE = entry;
+  void kvSetJson(KV_KEY, entry, TTL_S).catch(() => undefined);
+}
 
 export async function GET() {
   const now = Date.now();
-  if (CACHE && now - CACHE.ts < TTL_MS) {
+  const cached = await readCache();
+  if (cached) {
     return NextResponse.json({
-      ...CACHE.data,
+      ...cached.data,
       cached: true,
-      ageMs: now - CACHE.ts,
+      ageMs: now - cached.ts,
       ttlMs: TTL_MS,
     });
   }
@@ -77,15 +98,16 @@ export async function GET() {
     ];
 
     const result = aggregate(components);
-    CACHE = { ts: now, data: result };
+    const entry: CacheEntry = { ts: now, data: result };
+    await writeCache(entry);
     return NextResponse.json({ ...result, cached: false, ageMs: 0, ttlMs: TTL_MS });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (CACHE) {
+    if (MEM_CACHE) {
       return NextResponse.json({
-        ...CACHE.data,
+        ...MEM_CACHE.data,
         cached: true,
-        ageMs: now - CACHE.ts,
+        ageMs: now - MEM_CACHE.ts,
         ttlMs: TTL_MS,
         warning: message,
       });
