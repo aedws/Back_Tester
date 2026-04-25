@@ -5,6 +5,7 @@ import {
   Bar,
   ComposedChart,
   Line,
+  ReferenceDot,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -19,13 +20,15 @@ import {
   sma,
   stochastic,
 } from "@/lib/indicators";
+import type { LogChannelResult } from "@/lib/regression";
 import {
   INTERVAL_LABELS,
   INTERVAL_PLAN,
   UI_INTERVALS,
   type UiInterval,
 } from "@/lib/resample";
-import { classNames, fmtMoneyCompact } from "@/lib/format";
+import { buildSignals, type SignalMarker } from "@/lib/signals";
+import { classNames, fmtMoneyCompact, fmtPct } from "@/lib/format";
 
 interface CandleDto {
   t: number;
@@ -45,6 +48,7 @@ interface ChartResponse {
   currency?: string | null;
   shortName?: string | null;
   regularMarketPrice?: number | null;
+  regressionChannel?: LogChannelResult | null;
   error?: string;
 }
 
@@ -68,7 +72,9 @@ interface OverlayState {
   bb: boolean;
   rsi: boolean;
   stoch: boolean;
-  swingLevels: boolean; // ATR-based stop / take-profit overlay
+  swingLevels: boolean;        // ATR-based stop / take-profit overlay
+  regression: boolean;          // log-linear regression channel ±1σ/±2σ
+  signals: boolean;             // swing-trade signal markers
 }
 
 const DEFAULT_OVERLAYS: OverlayState = {
@@ -81,6 +87,8 @@ const DEFAULT_OVERLAYS: OverlayState = {
   rsi: true,
   stoch: false,
   swingLevels: false,
+  regression: false,
+  signals: false,
 };
 
 export type ChartPerspective = "investor" | "swing" | "day";
@@ -139,7 +147,8 @@ export function AdvancedChart({
   }, [initialPerspective]);
 
   // Auto-tune overlays per perspective (one-shot when perspective changes).
-  // Investors care about MA200/BB/RSI; swing/day enable swing levels by default.
+  // Investors care about MA200/BB/RSI + log-regression channel; swing/day
+  // enable swing levels and signal markers by default.
   useEffect(() => {
     if (perspective === "swing") {
       setOverlays((s) => ({
@@ -150,6 +159,8 @@ export function AdvancedChart({
         bb: true,
         rsi: true,
         swingLevels: true,
+        regression: false,
+        signals: true,
       }));
     } else if (perspective === "day") {
       setOverlays((s) => ({
@@ -161,6 +172,8 @@ export function AdvancedChart({
         bb: true,
         rsi: true,
         swingLevels: true,
+        regression: false,
+        signals: true,
       }));
     } else {
       setOverlays((s) => ({
@@ -173,6 +186,8 @@ export function AdvancedChart({
         rsi: true,
         stoch: false,
         swingLevels: false,
+        regression: true,
+        signals: false,
       }));
     }
   }, [perspective]);
@@ -193,10 +208,14 @@ export function AdvancedChart({
       if (!quiet) setLoading(true);
       if (!quiet) setError(null);
       try {
-        const res = await fetch(
-          `/api/chart?ticker=${encodeURIComponent(ticker)}&interval=${interval}`,
-          { cache: "no-store" },
-        );
+        const params = new URLSearchParams({
+          ticker,
+          interval,
+        });
+        if (overlays.regression) params.set("regression", "log");
+        const res = await fetch(`/api/chart?${params.toString()}`, {
+          cache: "no-store",
+        });
         const json = (await res.json()) as ChartResponse;
         if (cancelled || id !== reqId.current) return;
         if (!res.ok) {
@@ -254,7 +273,7 @@ export function AdvancedChart({
         document.removeEventListener("visibilitychange", onVisibility);
       }
     };
-  }, [ticker, interval, autoRefreshMs]);
+  }, [ticker, interval, autoRefreshMs, overlays.regression]);
 
   const enriched = useMemo(() => {
     if (!data || data.candles.length === 0) return null;
@@ -294,27 +313,55 @@ export function AdvancedChart({
   const rows = useMemo(() => {
     if (!enriched) return [];
     const { candles, mas, bb, rsi14, stoch } = enriched;
-    return candles.map((c, i) => ({
-      t: c.t,
-      label: formatBucket(c.t, interval),
-      close: c.c,
-      high: c.h,
-      low: c.l,
-      open: c.o,
-      volume: c.v,
-      ma5: mas[5][i],
-      ma20: mas[20][i],
-      ma60: mas[60][i],
-      ma120: mas[120][i],
-      ma200: mas[200][i],
-      bbU: bb.upper[i],
-      bbL: bb.lower[i],
-      bbM: bb.middle[i],
-      rsi: rsi14[i],
-      stochK: stoch.k[i],
-      stochD: stoch.d[i],
-    }));
-  }, [enriched, interval]);
+    const channel = data?.regressionChannel?.points ?? null;
+    return candles.map((c, i) => {
+      const ch = channel?.[i];
+      return {
+        t: c.t,
+        label: formatBucket(c.t, interval),
+        close: c.c,
+        high: c.h,
+        low: c.l,
+        open: c.o,
+        volume: c.v,
+        ma5: mas[5][i],
+        ma20: mas[20][i],
+        ma60: mas[60][i],
+        ma120: mas[120][i],
+        ma200: mas[200][i],
+        bbU: bb.upper[i],
+        bbL: bb.lower[i],
+        bbM: bb.middle[i],
+        rsi: rsi14[i],
+        stochK: stoch.k[i],
+        stochD: stoch.d[i],
+        regFit: ch?.fit ?? NaN,
+        regPlus1: ch?.plus1 ?? NaN,
+        regPlus2: ch?.plus2 ?? NaN,
+        regMinus1: ch?.minus1 ?? NaN,
+        regMinus2: ch?.minus2 ?? NaN,
+      };
+    });
+  }, [enriched, interval, data?.regressionChannel]);
+
+  // Swing-trade signal markers — only computed when the user has enabled the
+  // overlay so quiet refreshes don't waste CPU.
+  const signals = useMemo<SignalMarker[]>(() => {
+    if (!overlays.signals || !enriched) return [];
+    const { candles, mas, rsi14 } = enriched;
+    return buildSignals({
+      candles: candles.map((c) => ({
+        high: c.h,
+        low: c.l,
+        close: c.c,
+      })),
+      // The signals helper accepts the same MA arrays we already compute.
+      // Fall back to MA60 if MA50 isn't available (we only run 5/20/60/120/200).
+      ma50: mas[60],
+      ma200: mas[200],
+      rsi: rsi14,
+    });
+  }, [enriched, overlays.signals]);
 
   // Rolling 20-period high/low for swing levels (mainstream Donchian-ish).
   const swingLevels = useMemo(() => {
@@ -417,6 +464,8 @@ export function AdvancedChart({
             rows={rows}
             overlays={overlays}
             swingLevels={overlays.swingLevels ? swingLevels : null}
+            signals={overlays.signals ? signals : []}
+            channelMeta={overlays.regression ? data?.regressionChannel ?? null : null}
           />
 
           {showRsi ? <RsiFrame rows={rows} /> : null}
@@ -424,6 +473,10 @@ export function AdvancedChart({
 
           {overlays.swingLevels && swingLevels ? (
             <SwingLevelsCard sl={swingLevels} perspective={perspective} />
+          ) : null}
+
+          {overlays.regression && data?.regressionChannel ? (
+            <RegressionCard channel={data.regressionChannel} />
           ) : null}
         </>
       )}
@@ -545,14 +598,32 @@ function OverlayToggles({
       <Toggle on={overlays.stoch} onClick={() => toggle("stoch")}>
         Stoch(14,3,3)
       </Toggle>
-      {perspective !== "investor" ? (
+      {perspective === "investor" ? (
         <Toggle
-          on={overlays.swingLevels}
-          onClick={() => toggle("swingLevels")}
-          tone="amber"
+          on={overlays.regression}
+          onClick={() => toggle("regression")}
+          tone="violet"
         >
-          손절·익절선
+          로그 회귀 채널 ±σ
         </Toggle>
+      ) : null}
+      {perspective !== "investor" ? (
+        <>
+          <Toggle
+            on={overlays.swingLevels}
+            onClick={() => toggle("swingLevels")}
+            tone="amber"
+          >
+            손절·익절선
+          </Toggle>
+          <Toggle
+            on={overlays.signals}
+            onClick={() => toggle("signals")}
+            tone="green"
+          >
+            스윙 시그널
+          </Toggle>
+        </>
       ) : null}
     </div>
   );
@@ -567,18 +638,23 @@ function Toggle({
   on: boolean;
   onClick: () => void;
   children: React.ReactNode;
-  tone?: "amber";
+  tone?: "amber" | "violet" | "green";
 }) {
+  const onClass = (() => {
+    if (!on) return "border-border bg-bg-subtle text-ink-muted hover:border-border-strong hover:text-ink";
+    switch (tone) {
+      case "amber": return "border-accent-amber bg-accent-amber/15 text-accent-amber";
+      case "violet": return "border-[#a78bfa] bg-[#a78bfa]/15 text-[#a78bfa]";
+      case "green": return "border-accent-green bg-accent-green/15 text-accent-green";
+      default: return "border-accent bg-accent/15 text-accent";
+    }
+  })();
   return (
     <button
       onClick={onClick}
       className={classNames(
         "rounded-md border px-2 py-0.5 text-[11px] font-medium transition",
-        on
-          ? tone === "amber"
-            ? "border-accent-amber bg-accent-amber/15 text-accent-amber"
-            : "border-accent bg-accent/15 text-accent"
-          : "border-border bg-bg-subtle text-ink-muted hover:border-border-strong hover:text-ink",
+        onClass,
       )}
     >
       {children}
@@ -622,11 +698,19 @@ function PriceFrame({
   rows,
   overlays,
   swingLevels,
+  signals,
+  channelMeta,
 }: {
   rows: Row[];
   overlays: OverlayState;
   swingLevels: SwingLevels | null;
+  signals: SignalMarker[];
+  channelMeta: LogChannelResult | null;
 }) {
+  // We pass `channelMeta` only so the legend can show the trend's CAGR/σ if
+  // the regression overlay is on; the overlay shape itself is rendered from
+  // per-row regFit / regPlus1 / regPlus2 / regMinus1 / regMinus2 fields.
+  void channelMeta;
   return (
     <div className="rounded-lg border border-border bg-bg-subtle p-3">
       <div className="h-[420px] w-full">
@@ -715,6 +799,92 @@ function PriceFrame({
                   dot={false}
                   isAnimationActive={false}
                   name={`MA${p}`}
+                />
+              );
+            })}
+            {overlays.regression ? (
+              <>
+                <Line
+                  yAxisId="price"
+                  type="monotone"
+                  dataKey="regFit"
+                  stroke="#a78bfa"
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                  name="회귀 추세선"
+                  connectNulls
+                />
+                <Line
+                  yAxisId="price"
+                  type="monotone"
+                  dataKey="regPlus1"
+                  stroke="#a78bfa"
+                  strokeOpacity={0.55}
+                  strokeDasharray="3 4"
+                  strokeWidth={1}
+                  dot={false}
+                  isAnimationActive={false}
+                  name="+1σ"
+                  connectNulls
+                />
+                <Line
+                  yAxisId="price"
+                  type="monotone"
+                  dataKey="regPlus2"
+                  stroke="#a78bfa"
+                  strokeOpacity={0.35}
+                  strokeDasharray="2 5"
+                  strokeWidth={1}
+                  dot={false}
+                  isAnimationActive={false}
+                  name="+2σ"
+                  connectNulls
+                />
+                <Line
+                  yAxisId="price"
+                  type="monotone"
+                  dataKey="regMinus1"
+                  stroke="#a78bfa"
+                  strokeOpacity={0.55}
+                  strokeDasharray="3 4"
+                  strokeWidth={1}
+                  dot={false}
+                  isAnimationActive={false}
+                  name="−1σ"
+                  connectNulls
+                />
+                <Line
+                  yAxisId="price"
+                  type="monotone"
+                  dataKey="regMinus2"
+                  stroke="#a78bfa"
+                  strokeOpacity={0.35}
+                  strokeDasharray="2 5"
+                  strokeWidth={1}
+                  dot={false}
+                  isAnimationActive={false}
+                  name="−2σ"
+                  connectNulls
+                />
+              </>
+            ) : null}
+            {signals.map((m, k) => {
+              const row = rows[m.i];
+              if (!row) return null;
+              const isBuy = m.side === "buy";
+              return (
+                <ReferenceDot
+                  key={`sig-${k}`}
+                  yAxisId="price"
+                  x={row.label}
+                  y={m.price}
+                  r={5}
+                  fill={isBuy ? "#34d399" : "#f87171"}
+                  stroke="#0b0d12"
+                  strokeWidth={1.25}
+                  isFront
+                  ifOverflow="extendDomain"
                 />
               );
             })}
@@ -942,6 +1112,44 @@ function SwingLevelsCard({
         ATR(14) 기반 트레일링 스톱 ×{sl.atrMult}는 변동성 대비 보수적으로 잡은 수치이고,
         최근 {sl.lookback}봉 고저점은 단기 지지·저항 가이드입니다. 데이는 ATR×1.5 + 10봉,
         스윙은 ATR×2 + 20봉 기준으로 자동 적용됩니다.
+      </p>
+    </div>
+  );
+}
+
+function RegressionCard({ channel }: { channel: LogChannelResult }) {
+  const z = channel.zScore;
+  const zTone =
+    z >= 2 ? "text-accent-red"
+    : z >= 1 ? "text-accent-amber"
+    : z <= -2 ? "text-accent-green"
+    : z <= -1 ? "text-accent-green"
+    : "text-ink-muted";
+  const zLabel =
+    z >= 2 ? "과열 (>+2σ — 추세선 대비 매우 위)"
+    : z >= 1 ? "고평가 권역 (+1σ ~ +2σ)"
+    : z <= -2 ? "과매도 (< −2σ — 추세선 대비 매우 아래)"
+    : z <= -1 ? "저평가 권역 (−1σ ~ −2σ)"
+    : "추세선 ±1σ 이내 — 정상 범위";
+  return (
+    <div className="rounded-lg border border-border bg-bg-subtle/50 p-4">
+      <div className="mb-2 flex items-baseline justify-between">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-ink-muted">
+          로그-선형 회귀 채널
+        </div>
+        <div className="text-[11px] text-ink-dim">
+          R² {channel.r2.toFixed(3)} · σ(log) {channel.sigma.toFixed(3)}
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <Cell label="추정 연성장률 (CAGR)" value={fmtPct(channel.cagr)} tone={channel.cagr >= 0 ? "good" : "bad"} />
+        <Cell label="현재 z-score" value={`${z.toFixed(2)}σ`} tone={z >= 1 ? "amber" : z <= -1 ? "good" : "amber"} />
+        <Cell label="해석" value={zLabel} tone="amber" />
+      </div>
+      <p className={classNames("mt-3 text-[11px] leading-relaxed", zTone)}>
+        ※ ln(가격) ≈ a + b·t에 OLS를 적합한 추세선과 ±1σ/±2σ 채널입니다. 채널 상단(±2σ)은
+        장기 추세 대비 *과열·저항선* 후보, 하단은 *과매도·지지선* 후보로 해석됩니다. 단기
+        타이밍 도구가 아니며, 보이는 차트 구간 내 데이터로만 적합됩니다.
       </p>
     </div>
   );

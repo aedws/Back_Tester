@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { logLinearChannel, type LogChannelResult } from "@/lib/regression";
 import {
   INTERVAL_PLAN,
   UI_INTERVALS,
@@ -44,6 +45,7 @@ export async function GET(req: Request) {
   const ticker = (url.searchParams.get("ticker") ?? "").trim().toUpperCase();
   const intervalParam = (url.searchParams.get("interval") ?? "1d") as UiInterval;
   const rangeDaysParam = url.searchParams.get("days");
+  const regressionParam = (url.searchParams.get("regression") ?? "").toLowerCase();
 
   if (!ticker) {
     return NextResponse.json({ error: "ticker is required" }, { status: 400 });
@@ -114,6 +116,13 @@ export async function GET(req: Request) {
       v: c.volume,
     }));
 
+    let regressionChannel: LogChannelResult | null = null;
+    if (regressionParam === "log") {
+      regressionChannel = logLinearChannel(
+        bucketed.map((c) => ({ t: c.date, close: c.close })),
+      );
+    }
+
     return NextResponse.json({
       ticker,
       interval: intervalParam,
@@ -123,6 +132,7 @@ export async function GET(req: Request) {
       currency: chartMeta(chart, "currency"),
       shortName: chartMeta(chart, "shortName") ?? chartMeta(chart, "longName"),
       regularMarketPrice: chartMeta(chart, "regularMarketPrice"),
+      regressionChannel,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

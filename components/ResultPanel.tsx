@@ -11,6 +11,7 @@ import { EquityChart } from "./EquityChart";
 import { Kpi } from "./Kpi";
 import { PriceChart } from "./PriceChart";
 import { PurchasesTable } from "./PurchasesTable";
+import { WindowDistributionCard } from "./WindowDistributionCard";
 
 export function ResultPanel({
   outcome,
@@ -126,6 +127,10 @@ export function ResultPanel({
             comparison={outcome.reinvestComparison}
             totalInvested={s.totalInvested}
           />
+        ) : null}
+
+        {outcome.windowDistribution ? (
+          <WindowDistributionCard distribution={outcome.windowDistribution} />
         ) : null}
 
         <div className="rounded-lg border border-border bg-bg-subtle p-3">

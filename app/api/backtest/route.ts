@@ -4,6 +4,10 @@ import { runDca, type Frequency } from "@/lib/backtest";
 import type { PerTickerOutcome } from "@/lib/backtestApi";
 import { detectCoveredCall } from "@/lib/coveredCall";
 import {
+  buildWindowDistribution,
+  type WindowDistribution,
+} from "@/lib/distribution";
+import {
   analyseDividends,
   compareReinvestment,
   type DividendAnalysis,
@@ -118,18 +122,36 @@ export async function POST(req: Request) {
   const includeBenchmark =
     benchSymbol.length > 0 && !tickers.includes(benchSymbol);
 
+  // Pick the window length used for the historical sliding distribution.
+  // For year-mode we mirror the user's request; for inception/custom we cap
+  // at the user's effective window or 10 years, whichever is smaller (so the
+  // sliding-window math actually has multiple non-overlapping starts).
+  function pickWindowYears(actualYears: number): number {
+    if (body.mode === "years" && body.years && body.years > 0) {
+      return Math.min(body.years, 30);
+    }
+    if (actualYears > 0) return Math.min(Math.max(1, Math.round(actualYears)), 10);
+    return 10;
+  }
+
   // Run user tickers and benchmark concurrently; benchmark uses the same
   // period & schedule so the comparison is apples-to-apples.
   const settledPromise = Promise.all(
     tickers.map<Promise<PerTickerOutcome>>(async (ticker) => {
       try {
-        const fetched = await fetchPrices({
-          ticker,
-          mode: body.mode,
-          years: body.years,
-          start: body.start,
-          end: body.end,
-        });
+        // Fetch the user's exact period and the full inception history in
+        // parallel. The inception series powers the sliding distribution;
+        // the user's slice powers the headline backtest.
+        const [fetched, inception] = await Promise.all([
+          fetchPrices({
+            ticker,
+            mode: body.mode,
+            years: body.years,
+            start: body.start,
+            end: body.end,
+          }),
+          fetchPrices({ ticker, mode: "inception" }).catch(() => null),
+        ]);
         const result = runDca(ticker, fetched.prices, {
           amount,
           frequency: body.frequency,
@@ -174,6 +196,24 @@ export async function POST(req: Request) {
           }
         }
 
+        let windowDistribution: WindowDistribution | null = null;
+        if (inception && inception.prices.length >= 60) {
+          const windowYears = pickWindowYears(result.summary.years);
+          try {
+            windowDistribution = buildWindowDistribution({
+              ticker,
+              prices: inception.prices,
+              windowYears,
+              amount,
+              frequency: body.frequency,
+              fractional: body.fractional ?? true,
+              currentIrr: result.summary.irrAnnualized,
+            });
+          } catch {
+            windowDistribution = null;
+          }
+        }
+
         return {
           ticker,
           ok: true,
@@ -182,6 +222,7 @@ export async function POST(req: Request) {
           coveredCallApplied,
           dividendAnalysis,
           reinvestComparison,
+          windowDistribution,
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
