@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { EarningsBar } from "@/components/EarningsBar";
 import { MarketMarquee } from "@/components/MarketMarquee";
 
 import "./globals.css";
@@ -19,6 +20,7 @@ export default function RootLayout({
     <html lang="ko" className="dark">
       <body className="min-h-screen bg-bg text-ink antialiased">
         <MarketMarquee />
+        <EarningsBar />
         {children}
       </body>
     </html>
