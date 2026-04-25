@@ -1,6 +1,7 @@
+import Link from "next/link";
+
 import type { DcaResult } from "@/lib/backtest";
 import { fmtMoney, fmtNumber, fmtPct, classNames } from "@/lib/format";
-import { buildProtectiveLevels, type ProtectiveLevel } from "@/lib/levels";
 
 import { Card, CardBody, CardHeader } from "./Card";
 import { EquityChart } from "./EquityChart";
@@ -19,7 +20,6 @@ export function ResultPanel({
 }) {
   const s = result.summary;
   const profitTone = s.profit >= 0 ? "good" : "bad";
-  const levels = buildProtectiveLevels(s);
 
   const benchSymbol = benchmarkSymbol ?? benchmark?.summary.ticker ?? "VOO";
   const benchDelta =
@@ -37,6 +37,14 @@ export function ResultPanel({
               {s.startDate} → {s.endDate} · {s.years.toFixed(2)}년 · 매수 {s.nPurchases}회
             </span>
           </span>
+        }
+        right={
+          <Link
+            href={`/chart/${encodeURIComponent(s.ticker)}`}
+            className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-[11px] font-medium text-ink-muted transition hover:border-accent hover:text-accent"
+          >
+            상세 차트 →
+          </Link>
         }
       />
       <CardBody className="space-y-6">
@@ -92,8 +100,6 @@ export function ResultPanel({
             delta={benchDelta}
           />
         ) : null}
-
-        {levels ? <ProtectiveLevelsCard levels={levels} /> : null}
 
         <div className="rounded-lg border border-border bg-bg-subtle p-3">
           <div className="mb-1 flex items-center justify-between px-1 text-xs font-medium uppercase tracking-wider text-ink-muted">
@@ -172,97 +178,5 @@ function BenchCell({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] uppercase tracking-wider text-ink-dim">{label}</div>
       <div className="num text-sm font-semibold tabular-nums">{value}</div>
     </div>
-  );
-}
-
-function ProtectiveLevelsCard({
-  levels,
-}: {
-  levels: ReturnType<typeof buildProtectiveLevels> & object;
-}) {
-  // The non-null shape is enforced by the caller's null check.
-  const { avgCost, lastPrice, unrealizedPct, stops, targets } = levels;
-
-  return (
-    <div className="rounded-lg border border-border bg-bg-subtle/50 p-4">
-      <div className="mb-3 flex items-baseline justify-between">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-ink-muted">
-          기계적 손절선 / 익절선 (보수적 가이드)
-        </div>
-        <div className="text-[11px] text-ink-dim">
-          평단 {fmtMoney(avgCost)} · 현재 {fmtMoney(lastPrice)} ·
-          <span
-            className={classNames(
-              "ml-1 num",
-              unrealizedPct >= 0 ? "text-accent-green" : "text-accent-red",
-            )}
-          >
-            {unrealizedPct >= 0 ? "+" : ""}
-            {fmtPct(unrealizedPct)}
-          </span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <LevelColumn title="손절 (Stop-loss)" levels={stops} />
-        <LevelColumn title="익절 (Take-profit)" levels={targets} />
-      </div>
-
-      <p className="mt-3 text-[11px] leading-relaxed text-ink-dim">
-        시중 보편적 분할 손절/익절 사다리(평단 ±8%/15%/20%, +25%/+50%/+100%)를 기계적으로 표시한
-        값입니다. 추세 추종·ATR 기반 트레일링 스톱·MA200 이탈 같은 추가 룰은 PR 1b에서
-        합쳐 보여드릴 예정.
-      </p>
-    </div>
-  );
-}
-
-function LevelColumn({
-  title,
-  levels,
-}: {
-  title: string;
-  levels: ProtectiveLevel[];
-}) {
-  return (
-    <div className="rounded-md border border-border bg-bg-panel/40 p-3">
-      <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
-        {title}
-      </div>
-      <ul className="space-y-1.5">
-        {levels.map((lv) => (
-          <LevelRow key={lv.label} level={lv} />
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function LevelRow({ level }: { level: ProtectiveLevel }) {
-  const isStop = level.kind === "stop";
-  const tone = isStop ? "text-accent-red" : "text-accent-green";
-  // Distance: how far the price needs to *move from current* to hit this level.
-  const dist = level.fromPrice;
-  const reached =
-    (isStop && dist >= 0) || (!isStop && dist <= 0); // already past the line
-
-  return (
-    <li className="flex items-baseline justify-between gap-3 text-xs">
-      <span className="text-ink-muted">{level.label}</span>
-      <span className="flex items-baseline gap-2">
-        <span className={classNames("num font-semibold tabular-nums", tone)}>
-          {fmtMoney(level.price)}
-        </span>
-        <span
-          className={classNames(
-            "num text-[10px] tabular-nums",
-            reached ? "text-accent-amber" : "text-ink-dim",
-          )}
-          title={reached ? "이미 도달함" : "현재가 대비 거리"}
-        >
-          {reached ? "✓ 도달" : `${dist >= 0 ? "+" : ""}${(dist * 100).toFixed(1)}%`}
-        </span>
-      </span>
-    </li>
   );
 }
