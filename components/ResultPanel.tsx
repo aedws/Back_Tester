@@ -135,7 +135,10 @@ export function ResultPanel({
           />
         ) : null}
 
-        {outcome.coveredCallApplied && outcome.reinvestComparison ? (
+        {outcome.reinvestComparison &&
+        (outcome.coveredCallApplied ||
+          outcome.reinvestComparison.reinvestAlt ||
+          outcome.reinvestComparison.principalAlt) ? (
           <ReinvestCompareChart
             ticker={s.ticker}
             comparison={outcome.reinvestComparison}

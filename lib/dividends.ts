@@ -60,6 +60,41 @@ export interface ReinvestComparison {
   reinvest: { finalValue: number; totalReturn: number; series: ReinvestSeriesPoint[] };
   /** Drag/lift from reinvestment in dollar terms. */
   reinvestLift: number;
+  /**
+   * (PR-C) Optional: dividends are paid out and immediately reinvested into a
+   * *different* ticker (e.g. JEPI distributions → VOO). Total portfolio value
+   * = main holdings + alt holdings.
+   */
+  reinvestAlt?: AltReinvestResult;
+  /**
+   * (PR-C) Optional: same out-of-pocket schedule but every buy goes into a
+   * *different* ticker instead of the main one. Lets users see "what if I
+   * had DCA'd into VOO instead of JEPI?".
+   */
+  principalAlt?: AltPrincipalResult;
+}
+
+export interface AltReinvestResult {
+  altTicker: string;
+  /** Final total portfolio value (main shares × main price + alt shares × alt price + leftover cash). */
+  finalValue: number;
+  /** (finalValue − totalInvested) / totalInvested. Same denominator as reinvest/noReinvest. */
+  totalReturn: number;
+  /** Combined equity curve (main + alt valuation). */
+  series: ReinvestSeriesPoint[];
+  /** Final alt-ticker share count (after all dividends-in and splits). */
+  altShares: number;
+  /** Total dividend cash that flowed into the alt ticker over the window. */
+  altCashIn: number;
+}
+
+export interface AltPrincipalResult {
+  altTicker: string;
+  finalValue: number;
+  totalReturn: number;
+  series: ReinvestSeriesPoint[];
+  /** Final alt-ticker share count under the alternate principal scenario. */
+  altShares: number;
 }
 
 /**
@@ -380,6 +415,269 @@ function runReinvestSimulations(args: RunReinvestArgs): ReinvestComparison {
       series: rSeries,
     },
     reinvestLift: reinvestFinal - noReinvestFinal,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// PR-C: alt-ticker scenarios
+// ---------------------------------------------------------------------------
+
+export interface SimulateAltReinvestArgs {
+  mainTicker: string;
+  mainRawPrices: ReadonlyArray<RawPricePoint>;
+  mainDividends: ReadonlyArray<DividendEvent>;
+  mainSplits?: ReadonlyArray<SplitEvent>;
+  altTicker: string;
+  altRawPrices: ReadonlyArray<RawPricePoint>;
+  altDividends?: ReadonlyArray<DividendEvent>;
+  altSplits?: ReadonlyArray<SplitEvent>;
+  unitMode?: "amount" | "shares";
+  amount?: number;
+  shares?: number;
+  frequency: Frequency;
+  fractional?: boolean;
+  fractionalShares?: boolean;
+}
+
+/**
+ * Simulate the "main ticker pays distributions in cash, those distributions
+ * are reinvested into a *different* ticker" scenario.
+ *
+ * Walks the union of main + alt trading days. On each day:
+ *   1. apply splits to the held share count of each ticker
+ *   2. credit alt-ticker self-dividends (reinvested into alt)
+ *   3. drain pending cash into alt shares (if it's an alt trading day)
+ *   4. execute the main DCA buy (if it's a scheduled buy day)
+ *   5. credit main-ticker dividends as cash → routes into pendingAltCash
+ *
+ * Splits are applied at the *start* of the day (Yahoo's convention). The
+ * total invested capital ("out-of-pocket") only counts the user's scheduled
+ * main-ticker buys — dividend cash is treated as portfolio-internal flow.
+ */
+export function simulateAlternateReinvest(
+  args: SimulateAltReinvestArgs,
+): AltReinvestResult | null {
+  const {
+    mainRawPrices,
+    mainDividends,
+    mainSplits = [],
+    altTicker,
+    altRawPrices,
+    altDividends = [],
+    altSplits = [],
+    unitMode = "amount",
+    amount = 0,
+    shares: sharesPerPeriod = 0,
+    frequency,
+    fractional = true,
+    fractionalShares = false,
+  } = args;
+
+  if (mainRawPrices.length === 0 || altRawPrices.length === 0) return null;
+
+  // Build the main DCA buy schedule from the unadjusted price series.
+  const mainSeries: PricePoint[] = mainRawPrices.map((p) => ({
+    date: p.date,
+    close: p.rawClose,
+  }));
+  const scheduleRun = runDca("__schedule__", [...mainSeries], {
+    unitMode,
+    amount,
+    shares: sharesPerPeriod,
+    frequency,
+    fractional,
+    fractionalShares,
+  });
+  const mainBuyDates = new Set(scheduleRun.purchases.map((p) => p.date));
+
+  const mainPriceByDate = new Map<string, number>();
+  for (const p of mainRawPrices) mainPriceByDate.set(p.date, p.rawClose);
+  const altPriceByDate = new Map<string, number>();
+  for (const p of altRawPrices) altPriceByDate.set(p.date, p.rawClose);
+
+  const mainDivByDate = new Map<string, number>();
+  for (const d of mainDividends)
+    mainDivByDate.set(d.date, (mainDivByDate.get(d.date) ?? 0) + d.amount);
+  const altDivByDate = new Map<string, number>();
+  for (const d of altDividends)
+    altDivByDate.set(d.date, (altDivByDate.get(d.date) ?? 0) + d.amount);
+
+  const mainSplitByDate = new Map<string, number>();
+  for (const s of mainSplits)
+    mainSplitByDate.set(
+      s.date,
+      (mainSplitByDate.get(s.date) ?? 1) * s.ratio,
+    );
+  const altSplitByDate = new Map<string, number>();
+  for (const s of altSplits)
+    altSplitByDate.set(s.date, (altSplitByDate.get(s.date) ?? 1) * s.ratio);
+
+  const dateSet = new Set<string>();
+  for (const p of mainRawPrices) dateSet.add(p.date);
+  for (const p of altRawPrices) dateSet.add(p.date);
+  const allDates = Array.from(dateSet).sort();
+
+  let mainShares = 0;
+  let mainInvested = 0;
+  let mainScheduleCash = 0;
+  let altShares = 0;
+  let altCashIn = 0;
+  let pendingAltCash = 0;
+  let lastMainPrice = 0;
+  let lastAltPrice = 0;
+
+  const series: ReinvestSeriesPoint[] = [];
+
+  for (const date of allDates) {
+    const mainPrice = mainPriceByDate.get(date);
+    const altPrice = altPriceByDate.get(date);
+    if (mainPrice && Number.isFinite(mainPrice) && mainPrice > 0)
+      lastMainPrice = mainPrice;
+    if (altPrice && Number.isFinite(altPrice) && altPrice > 0)
+      lastAltPrice = altPrice;
+
+    const mSp = mainSplitByDate.get(date);
+    if (mSp && mSp > 0 && mSp !== 1) mainShares *= mSp;
+    const aSp = altSplitByDate.get(date);
+    if (aSp && aSp > 0 && aSp !== 1) altShares *= aSp;
+
+    // Alt ticker's own dividends compound into alt holdings (we're "in" alt).
+    const aDiv = altDivByDate.get(date);
+    if (aDiv) pendingAltCash += altShares * aDiv;
+
+    // Drain pending cash into alt shares on alt trading days.
+    if (altPrice && altPrice > 0 && pendingAltCash > 0) {
+      // Allow fractional whenever either side of the user's setup permits it
+      // — alt-ticker reinvestment is a back-of-the-envelope model anyway.
+      if (fractional || fractionalShares) {
+        altShares += pendingAltCash / altPrice;
+        pendingAltCash = 0;
+      } else {
+        const whole = Math.floor(pendingAltCash / altPrice);
+        altShares += whole;
+        pendingAltCash -= whole * altPrice;
+      }
+    }
+
+    // Main-ticker scheduled buy.
+    if (mainBuyDates.has(date) && mainPrice && mainPrice > 0) {
+      if (unitMode === "shares") {
+        const target = fractionalShares
+          ? sharesPerPeriod
+          : Math.floor(sharesPerPeriod);
+        if (target > 0) {
+          mainShares += target;
+          mainInvested += target * mainPrice;
+        }
+      } else {
+        const budget = amount + mainScheduleCash;
+        if (fractional) {
+          mainShares += budget / mainPrice;
+          mainInvested += budget;
+          mainScheduleCash = 0;
+        } else {
+          const whole = Math.floor(budget / mainPrice);
+          mainShares += whole;
+          mainInvested += whole * mainPrice;
+          mainScheduleCash = budget - whole * mainPrice;
+        }
+      }
+    }
+
+    // Main-ticker distribution → routes into alt.
+    const mDiv = mainDivByDate.get(date);
+    if (mDiv) {
+      const cash = mainShares * mDiv;
+      if (cash > 0) {
+        pendingAltCash += cash;
+        altCashIn += cash;
+      }
+    }
+
+    const value =
+      mainShares * lastMainPrice +
+      altShares * lastAltPrice +
+      pendingAltCash +
+      mainScheduleCash;
+    series.push({ date, value, invested: mainInvested });
+  }
+
+  if (series.length === 0) return null;
+
+  const finalValue = series[series.length - 1].value;
+  const totalReturn =
+    mainInvested > 0 ? (finalValue - mainInvested) / mainInvested : NaN;
+
+  return {
+    altTicker,
+    finalValue,
+    totalReturn,
+    series,
+    altShares,
+    altCashIn,
+  };
+}
+
+export interface SimulateAltPrincipalArgs {
+  altTicker: string;
+  /**
+   * Adjusted-close price series for the alt ticker, sliced to the same
+   * window used for the main backtest. Adjusted close is appropriate here
+   * because we're modelling a total-return scenario (dividends from the
+   * alt are assumed reinvested, the way Yahoo's adjclose does it).
+   */
+  altPrices: ReadonlyArray<PricePoint>;
+  unitMode?: "amount" | "shares";
+  amount?: number;
+  shares?: number;
+  frequency: Frequency;
+  fractional?: boolean;
+  fractionalShares?: boolean;
+}
+
+/**
+ * "What if all your DCA money had gone into ALT_TICKER instead of the main
+ * ticker?" — same out-of-pocket schedule, same buy size, just a different
+ * underlying. Uses adjclose so dividends + splits are baked in (matches
+ * the headline DCA result for any ticker).
+ */
+export function simulateAlternatePrincipal(
+  args: SimulateAltPrincipalArgs,
+): AltPrincipalResult | null {
+  const {
+    altTicker,
+    altPrices,
+    unitMode = "amount",
+    amount,
+    shares: sharesPerPeriod,
+    frequency,
+    fractional = true,
+    fractionalShares = false,
+  } = args;
+
+  if (altPrices.length === 0) return null;
+
+  const result = runDca(altTicker, [...altPrices], {
+    unitMode,
+    amount,
+    shares: sharesPerPeriod,
+    frequency,
+    fractional,
+    fractionalShares,
+  });
+
+  const series: ReinvestSeriesPoint[] = result.equityCurve.map((e) => ({
+    date: e.date,
+    value: e.value,
+    invested: e.invested,
+  }));
+
+  return {
+    altTicker,
+    finalValue: result.summary.finalValue,
+    totalReturn: result.summary.totalReturn,
+    series,
+    altShares: result.summary.totalShares,
   };
 }
 

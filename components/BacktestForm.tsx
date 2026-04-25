@@ -42,6 +42,11 @@ export function BacktestForm() {
   const [shares, setShares] = useState(1);
   const [fractional, setFractional] = useState(true);
   const [fractionalShares, setFractionalShares] = useState(false);
+  // PR-C: alt-ticker scenarios (off by default).
+  const [altReinvestEnabled, setAltReinvestEnabled] = useState(false);
+  const [altReinvestTicker, setAltReinvestTicker] = useState("VOO");
+  const [altPrincipalEnabled, setAltPrincipalEnabled] = useState(false);
+  const [altPrincipalTicker, setAltPrincipalTicker] = useState("VOO");
 
   const [loading, setLoading] = useState(false);
   const [outcomes, setOutcomes] = useState<PerTickerOutcome[] | null>(null);
@@ -68,6 +73,9 @@ export function BacktestForm() {
     else if (periodChoice === "inception") mode = "inception";
     else mode = "custom";
 
+    const altRSym = altReinvestEnabled ? altReinvestTicker.trim().toUpperCase() : "";
+    const altPSym = altPrincipalEnabled ? altPrincipalTicker.trim().toUpperCase() : "";
+
     return {
       tickers,
       mode,
@@ -81,6 +89,8 @@ export function BacktestForm() {
       fractional,
       fractionalShares,
       coveredCallOverrides: overrides ?? coveredCallOverrides,
+      altReinvestTicker: altRSym || undefined,
+      altPrincipalTicker: altPSym || undefined,
     };
   }
 
@@ -471,6 +481,17 @@ export function BacktestForm() {
             </label>
           )}
 
+          <AltScenarios
+            altReinvestEnabled={altReinvestEnabled}
+            altReinvestTicker={altReinvestTicker}
+            onToggleAltReinvest={setAltReinvestEnabled}
+            onChangeAltReinvest={setAltReinvestTicker}
+            altPrincipalEnabled={altPrincipalEnabled}
+            altPrincipalTicker={altPrincipalTicker}
+            onToggleAltPrincipal={setAltPrincipalEnabled}
+            onChangeAltPrincipal={setAltPrincipalTicker}
+          />
+
           <MultiTickerHint
             tickerCount={tickersRaw
               .split(",")
@@ -621,6 +642,102 @@ function MultiTickerHint({
       <span className="text-ink">{tickerCount}개 티커</span> × {shares}주 ={" "}
       <span className="text-accent">{totalShares}주</span>
       <span className="text-ink-dim"> / {perPeriod} (실제 투자금은 가격에 따라 달라짐)</span>
+    </div>
+  );
+}
+
+/**
+ * PR-C: collapsible "alternative scenarios" panel — adds two extra lines to
+ * the dividend-reinvest comparison chart. Both off by default to keep the
+ * default UI clean for users who don't need this view.
+ */
+function AltScenarios({
+  altReinvestEnabled,
+  altReinvestTicker,
+  onToggleAltReinvest,
+  onChangeAltReinvest,
+  altPrincipalEnabled,
+  altPrincipalTicker,
+  onToggleAltPrincipal,
+  onChangeAltPrincipal,
+}: {
+  altReinvestEnabled: boolean;
+  altReinvestTicker: string;
+  onToggleAltReinvest: (v: boolean) => void;
+  onChangeAltReinvest: (v: string) => void;
+  altPrincipalEnabled: boolean;
+  altPrincipalTicker: string;
+  onToggleAltPrincipal: (v: boolean) => void;
+  onChangeAltPrincipal: (v: string) => void;
+}) {
+  const anyOn = altReinvestEnabled || altPrincipalEnabled;
+  const [open, setOpen] = useState(anyOn);
+  return (
+    <div className="mb-4 rounded-md border border-border bg-bg-subtle/40">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-ink-muted hover:text-ink"
+      >
+        <span>
+          대체 시나리오{" "}
+          {anyOn ? (
+            <span className="ml-1 normal-case text-accent">활성</span>
+          ) : (
+            <span className="ml-1 normal-case text-ink-dim">선택 사항</span>
+          )}
+        </span>
+        <span className="text-ink-dim">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <div className="space-y-3 border-t border-border px-3 py-3">
+          <p className="text-[10px] leading-relaxed text-ink-dim">
+            아래 옵션은 분배금 재투자 비교 차트에 라인을 추가합니다. 커버드콜
+            ETF (예: JEPI/JEPQ/QYLD) 처럼 분배금이 큰 종목에서 가장 의미가
+            있습니다.
+          </p>
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-muted">
+            <input
+              type="checkbox"
+              checked={altReinvestEnabled}
+              onChange={(e) => onToggleAltReinvest(e.target.checked)}
+              className="h-4 w-4 rounded border-border bg-bg-subtle accent-accent"
+            />
+            분배금을 다른 종목에 재투자
+          </label>
+          {altReinvestEnabled ? (
+            <input
+              type="text"
+              value={altReinvestTicker}
+              onChange={(e) => onChangeAltReinvest(e.target.value)}
+              placeholder="예: VOO, QQQ, SCHD"
+              className={classNames(inputCls, "font-mono uppercase")}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          ) : null}
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-ink-muted">
+            <input
+              type="checkbox"
+              checked={altPrincipalEnabled}
+              onChange={(e) => onToggleAltPrincipal(e.target.checked)}
+              className="h-4 w-4 rounded border-border bg-bg-subtle accent-accent"
+            />
+            원금을 다른 종목에 동일 DCA
+          </label>
+          {altPrincipalEnabled ? (
+            <input
+              type="text"
+              value={altPrincipalTicker}
+              onChange={(e) => onChangeAltPrincipal(e.target.value)}
+              placeholder="예: VOO, QQQ, SCHD"
+              className={classNames(inputCls, "font-mono uppercase")}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

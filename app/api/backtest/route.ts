@@ -10,6 +10,8 @@ import {
 import {
   analyseDividends,
   compareReinvestment,
+  simulateAlternatePrincipal,
+  simulateAlternateReinvest,
   type DividendAnalysis,
   type ReinvestComparison,
 } from "@/lib/dividends";
@@ -45,6 +47,10 @@ interface BacktestRequest {
    *  - undefined / missing key → use auto-detection
    */
   coveredCallOverrides?: Record<string, boolean>;
+  /** PR-C: route distributions into a different ticker for "what-if" comparison. */
+  altReinvestTicker?: string | null;
+  /** PR-C: invest the same out-of-pocket schedule into a different ticker. */
+  altPrincipalTicker?: string | null;
 }
 
 const DEFAULT_BENCHMARK = "VOO";
@@ -143,6 +149,16 @@ export async function POST(req: Request) {
   const includeBenchmark =
     benchSymbol.length > 0 && !tickers.includes(benchSymbol);
 
+  // Resolve alt-ticker scenarios (PR-C). Empty / null means "skip".
+  const altReinvestSym = (body.altReinvestTicker ?? "")
+    .toString()
+    .trim()
+    .toUpperCase();
+  const altPrincipalSym = (body.altPrincipalTicker ?? "")
+    .toString()
+    .trim()
+    .toUpperCase();
+
   // Pick the window length used for the historical sliding distribution.
   // For year-mode we mirror the user's request; for inception/custom we cap
   // at the user's effective window or 10 years, whichever is smaller (so the
@@ -221,6 +237,99 @@ export async function POST(req: Request) {
           } catch {
             // Reinvest sim is non-critical — drop silently if it fails.
             reinvestComparison = undefined;
+          }
+        }
+
+        // PR-C: alt-ticker scenarios. Both are independent so we attempt
+        // each one as a best-effort add-on; failures are silently dropped.
+        if (
+          (altReinvestSym && altReinvestSym !== ticker) ||
+          (altPrincipalSym && altPrincipalSym !== ticker)
+        ) {
+          // Need a base ReinvestComparison to attach the extra scenarios to;
+          // create a minimal one if covered-call wasn't applied.
+          if (!reinvestComparison) {
+            try {
+              reinvestComparison = compareReinvestment({
+                ticker,
+                rawPrices: fetched.rawPrices,
+                dividends: fetched.dividends,
+                splits: fetched.splits,
+                unitMode,
+                amount,
+                shares: sharesPerPeriod,
+                frequency: body.frequency,
+                fractional: body.fractional ?? true,
+                fractionalShares: body.fractionalShares ?? false,
+              });
+            } catch {
+              reinvestComparison = undefined;
+            }
+          }
+
+          if (
+            reinvestComparison &&
+            altReinvestSym &&
+            altReinvestSym !== ticker &&
+            fetched.dividends.length > 0
+          ) {
+            try {
+              const altFetched = await fetchPricesCached({
+                ticker: altReinvestSym,
+                mode: body.mode,
+                years: body.years,
+                start: body.start,
+                end: body.end,
+              });
+              const sim = simulateAlternateReinvest({
+                mainTicker: ticker,
+                mainRawPrices: fetched.rawPrices,
+                mainDividends: fetched.dividends,
+                mainSplits: fetched.splits,
+                altTicker: altReinvestSym,
+                altRawPrices: altFetched.rawPrices,
+                altDividends: altFetched.dividends,
+                altSplits: altFetched.splits,
+                unitMode,
+                amount,
+                shares: sharesPerPeriod,
+                frequency: body.frequency,
+                fractional: body.fractional ?? true,
+                fractionalShares: body.fractionalShares ?? false,
+              });
+              if (sim) reinvestComparison.reinvestAlt = sim;
+            } catch {
+              // best-effort
+            }
+          }
+
+          if (
+            reinvestComparison &&
+            altPrincipalSym &&
+            altPrincipalSym !== ticker
+          ) {
+            try {
+              const altFetched = await fetchPricesCached({
+                ticker: altPrincipalSym,
+                mode: body.mode,
+                years: body.years,
+                start: body.start,
+                end: body.end,
+              });
+              const sim = simulateAlternatePrincipal({
+                altTicker: altPrincipalSym,
+                altPrices: altFetched.prices,
+                unitMode,
+                amount,
+                shares: sharesPerPeriod,
+                frequency: body.frequency,
+                fractional: body.fractional ?? true,
+                fractionalShares: body.fractionalShares ?? false,
+              });
+              if (sim) reinvestComparison.principalAlt = sim;
+            } catch {
+              // best-effort
+            }
           }
         }
 
