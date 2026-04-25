@@ -15,7 +15,11 @@
 - 분수 매수 토글 — 끄면 정수 주식만 매수, 잔액은 다음 매수로 이월
 - 지표: 총 투자금, 최종 평가액, 총 수익률, **연환산 IRR(Money-weighted, XIRR)**,
   **최대 낙폭(MDD)**, 평균 매수가, 보유 주식 수, 일시 매수 비교(총 수익률·CAGR)
+- **VOO 벤치마크** 자동 비교 — 같은 기간·같은 주기로 VOO에 동일 DCA를 돌린 결과를 옆에 띄움
+- **보수적 손절/익절 가이드** — 평단 기준 -8%/-15%/-20% 손절, +25%/+50%/+100% 익절선
 - 다중 티커 비교: 쉼표로 입력 → 비교 표 + `평가액/누적투자금` 비율 차트
+- **상단 마켓 마퀴**: USD/KRW · DXY · 나스닥 · NQ선물 · S&P 500 · 다우 · SOX · VIX · 코스피 · 코스닥 · WTI 원유 (60초 폴링, 야후 무료 데이터 약 15분 지연)
+- **국내장 지원** — 야후 심볼로 직접 입력. 코스피 `xxxxxx.KS`, 코스닥 `xxxxxx.KQ` (예: `005930.KS` 삼성전자, `069500.KS` KODEX 200, `133690.KS` TIGER 미국나스닥100)
 - 매수 내역 테이블 + CSV 다운로드
 
 ## 로컬 개발
@@ -60,23 +64,27 @@ vercel --prod       # 프로덕션 배포
 
 ```
 app/
-  layout.tsx
+  layout.tsx                   # MarketMarquee 부착
   page.tsx
   globals.css
   api/
-    backtest/route.ts          # POST /api/backtest
+    backtest/route.ts          # POST /api/backtest (VOO 벤치마크 동시 계산)
+    market/route.ts            # GET  /api/market   (마켓 마퀴 11종, 30초 캐시)
 components/
   BacktestForm.tsx             # 폼 + 결과 라우팅 (client component)
-  ResultPanel.tsx              # 단일 티커 KPI/차트/테이블
+  ResultPanel.tsx              # 단일 티커 KPI/차트/테이블 + 손절/익절 가이드
   CompareChart.tsx             # 다중 티커 비율 차트
   CompareTable.tsx
-  EquityChart.tsx              # 평가액 vs 투자금
+  EquityChart.tsx              # 평가액 vs 투자금 (+ VOO 라인)
   PriceChart.tsx               # 주가 + 매수 마커 + 평균 매수가 라인
   PurchasesTable.tsx           # 매수 내역 + CSV 다운로드
+  MarketMarquee.tsx            # 상단 실시간 시세 바
   Card.tsx, Kpi.tsx
 lib/
   backtest.ts                  # DCA 엔진 (순수 TS)
-  yahoo.ts                     # 가격 fetch 래퍼
+  yahoo.ts                     # 가격/Quote fetch 래퍼
+  marketTickers.ts             # 마켓 마퀴 심볼 목록
+  levels.ts                    # 손절/익절 가이드 레벨 계산
   format.ts
 streamlit-app/                 # (옵션) 기존 Python/Streamlit 버전
   app.py, backtest.py, requirements.txt

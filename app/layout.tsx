@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 
+import { MarketMarquee } from "@/components/MarketMarquee";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -16,6 +18,7 @@ export default function RootLayout({
   return (
     <html lang="ko" className="dark">
       <body className="min-h-screen bg-bg text-ink antialiased">
+        <MarketMarquee />
         {children}
       </body>
     </html>

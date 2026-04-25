@@ -17,6 +17,7 @@ interface Point {
   date: string;
   value: number;
   invested: number;
+  benchmark?: number;
 }
 
 function downsample(points: Point[], maxPoints = 600): Point[] {
@@ -30,12 +31,28 @@ function downsample(points: Point[], maxPoints = 600): Point[] {
   return out;
 }
 
-export function EquityChart({ result }: { result: DcaResult }) {
+export function EquityChart({
+  result,
+  benchmark,
+  benchmarkLabel = "VOO",
+}: {
+  result: DcaResult;
+  benchmark?: DcaResult | null;
+  benchmarkLabel?: string;
+}) {
+  // Build a date -> benchmark value map so we can align even when the price
+  // series have different lengths or trading-day mismatches.
+  const benchByDate = new Map<string, number>();
+  if (benchmark) {
+    for (const e of benchmark.equityCurve) benchByDate.set(e.date, e.value);
+  }
+
   const data: Point[] = downsample(
     result.equityCurve.map((e) => ({
       date: e.date,
       value: e.value,
       invested: e.invested,
+      benchmark: benchByDate.get(e.date),
     })),
   );
 
@@ -90,6 +107,18 @@ export function EquityChart({ result }: { result: DcaResult }) {
             name="Cumulative invested"
             isAnimationActive={false}
           />
+          {benchmark ? (
+            <Line
+              type="monotone"
+              dataKey="benchmark"
+              stroke="#fbbf24"
+              strokeWidth={1.75}
+              dot={false}
+              name={`${benchmarkLabel} 동일 DCA`}
+              isAnimationActive={false}
+              connectNulls
+            />
+          ) : null}
         </ComposedChart>
       </ResponsiveContainer>
     </div>

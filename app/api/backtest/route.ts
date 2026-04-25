@@ -16,6 +16,8 @@ interface BacktestRequest {
   amount: number;
   frequency: Frequency;
   fractional?: boolean;
+  /** Optional benchmark symbol; defaults to VOO when omitted/null. Send empty string to skip. */
+  benchmark?: string | null;
 }
 
 interface PerTickerOutcome {
@@ -24,6 +26,8 @@ interface PerTickerOutcome {
   result?: DcaResult;
   error?: string;
 }
+
+const DEFAULT_BENCHMARK = "VOO";
 
 export async function POST(req: Request) {
   let body: BacktestRequest;
@@ -87,7 +91,17 @@ export async function POST(req: Request) {
     );
   }
 
-  const settled = await Promise.all(
+  // Resolve benchmark. The user can opt out by passing an empty string.
+  const benchSymbol =
+    body.benchmark === undefined || body.benchmark === null
+      ? DEFAULT_BENCHMARK
+      : String(body.benchmark).trim().toUpperCase();
+  const includeBenchmark =
+    benchSymbol.length > 0 && !tickers.includes(benchSymbol);
+
+  // Run user tickers and benchmark concurrently; benchmark uses the same
+  // period & schedule so the comparison is apples-to-apples.
+  const settledPromise = Promise.all(
     tickers.map<Promise<PerTickerOutcome>>(async (ticker) => {
       try {
         const { prices } = await fetchPrices({
@@ -110,5 +124,34 @@ export async function POST(req: Request) {
     }),
   );
 
-  return NextResponse.json({ results: settled });
+  const benchPromise: Promise<PerTickerOutcome | null> = includeBenchmark
+    ? (async () => {
+        try {
+          const { prices } = await fetchPrices({
+            ticker: benchSymbol,
+            mode: body.mode,
+            years: body.years,
+            start: body.start,
+            end: body.end,
+          });
+          const result = runDca(benchSymbol, prices, {
+            amount,
+            frequency: body.frequency,
+            fractional: body.fractional ?? true,
+          });
+          return { ticker: benchSymbol, ok: true, result };
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return { ticker: benchSymbol, ok: false, error: message };
+        }
+      })()
+    : Promise.resolve(null);
+
+  const [settled, benchmark] = await Promise.all([settledPromise, benchPromise]);
+
+  return NextResponse.json({
+    results: settled,
+    benchmark,
+    benchmarkSymbol: includeBenchmark ? benchSymbol : null,
+  });
 }

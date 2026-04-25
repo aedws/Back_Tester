@@ -19,6 +19,12 @@ interface PerTickerOutcome {
   error?: string;
 }
 
+interface BacktestApiResponse {
+  results: PerTickerOutcome[];
+  benchmark: PerTickerOutcome | null;
+  benchmarkSymbol: string | null;
+}
+
 const FREQ_LABEL: Record<Frequency, string> = {
   daily: "매일",
   weekly: "매주",
@@ -46,6 +52,8 @@ export function BacktestForm() {
 
   const [loading, setLoading] = useState(false);
   const [outcomes, setOutcomes] = useState<PerTickerOutcome[] | null>(null);
+  const [benchmark, setBenchmark] = useState<PerTickerOutcome | null>(null);
+  const [benchmarkSymbol, setBenchmarkSymbol] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   function buildPayload() {
@@ -76,6 +84,8 @@ export function BacktestForm() {
     e.preventDefault();
     setSubmitError(null);
     setOutcomes(null);
+    setBenchmark(null);
+    setBenchmarkSymbol(null);
 
     const payload = buildPayload();
     if (payload.tickers.length === 0) {
@@ -102,11 +112,15 @@ export function BacktestForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
+      const data = (await res.json()) as Partial<BacktestApiResponse> & {
+        error?: string;
+      };
       if (!res.ok) {
         throw new Error(data?.error ?? `Request failed (${res.status})`);
       }
-      setOutcomes(data.results as PerTickerOutcome[]);
+      setOutcomes((data.results ?? []) as PerTickerOutcome[]);
+      setBenchmark(data.benchmark ?? null);
+      setBenchmarkSymbol(data.benchmarkSymbol ?? null);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -119,6 +133,10 @@ export function BacktestForm() {
     .map((o) => o.result);
 
   const failed = (outcomes ?? []).filter((o) => !o.ok);
+  const benchmarkResult: DcaResult | null =
+    benchmark && benchmark.ok && benchmark.result ? benchmark.result : null;
+  const benchmarkErr =
+    benchmark && !benchmark.ok ? benchmark.error ?? null : null;
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">
@@ -131,17 +149,62 @@ export function BacktestForm() {
             백테스트 설정
           </h2>
 
-          <Field label="티커 (쉼표로 구분, 최대 10개)">
+          <Field
+            label="티커 (쉼표로 구분, 최대 10개)"
+            hint="미국 종목은 그대로(예: AAPL, VOO, QQQ). 한국은 .KS(코스피) / .KQ(코스닥) 접미사 — 예: 005930.KS(삼성전자), 069500.KS(KODEX 200)."
+          >
             <input
               type="text"
               value={tickersRaw}
               onChange={(e) => setTickersRaw(e.target.value)}
-              placeholder="AAPL, MSFT, SPY"
+              placeholder="AAPL, MSFT, SPY  또는  005930.KS, 069500.KS"
               className={inputCls}
               autoCapitalize="characters"
               autoCorrect="off"
               spellCheck={false}
             />
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {[
+                { label: "AAPL", v: "AAPL" },
+                { label: "VOO", v: "VOO" },
+                { label: "QQQ", v: "QQQ" },
+                { label: "삼성전자", v: "005930.KS" },
+                { label: "KODEX 200", v: "069500.KS" },
+                { label: "TIGER 美나스닥100", v: "133690.KS" },
+              ].map((p) => (
+                <button
+                  key={p.v}
+                  type="button"
+                  onClick={() => {
+                    const list = tickersRaw
+                      .split(",")
+                      .map((t) => t.trim())
+                      .filter(Boolean);
+                    if (list.includes(p.v.toUpperCase())) {
+                      setTickersRaw(
+                        list
+                          .filter((t) => t.toUpperCase() !== p.v.toUpperCase())
+                          .join(", "),
+                      );
+                    } else {
+                      setTickersRaw([...list, p.v].join(", "));
+                    }
+                  }}
+                  className={classNames(
+                    "rounded-md border px-2 py-1 text-[11px] font-medium transition",
+                    tickersRaw
+                      .split(",")
+                      .map((t) => t.trim().toUpperCase())
+                      .includes(p.v.toUpperCase())
+                      ? "border-accent bg-accent/15 text-accent"
+                      : "border-border bg-bg-subtle text-ink-muted hover:border-border-strong hover:text-ink",
+                  )}
+                  title={p.v}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </Field>
 
           <Field label="기간">
@@ -332,8 +395,24 @@ export function BacktestForm() {
           </div>
         ) : null}
 
+        {benchmarkErr && successResults.length > 0 ? (
+          <div className="rounded-md border border-accent-amber/40 bg-accent-amber/5 px-3 py-2 text-xs text-accent-amber">
+            벤치마크({benchmarkSymbol ?? "VOO"}) 데이터를 불러오지 못했습니다: {benchmarkErr}
+          </div>
+        ) : null}
+
         {successResults.map((r) => (
-          <ResultPanel key={r.ticker} result={r} />
+          <ResultPanel
+            key={r.ticker}
+            result={r}
+            benchmark={
+              // Don't compare a ticker against itself.
+              benchmarkResult && benchmarkResult.ticker !== r.ticker
+                ? benchmarkResult
+                : null
+            }
+            benchmarkSymbol={benchmarkSymbol}
+          />
         ))}
       </section>
     </div>
