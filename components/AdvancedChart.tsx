@@ -5,6 +5,7 @@ import {
   Bar,
   ComposedChart,
   Line,
+  ReferenceArea,
   ReferenceDot,
   ReferenceLine,
   ResponsiveContainer,
@@ -29,6 +30,8 @@ import {
 } from "@/lib/resample";
 import { buildSignals, type SignalMarker } from "@/lib/signals";
 import { classNames, fmtMoneyCompact, fmtPct } from "@/lib/format";
+import { useChartZoom, type UseChartZoom } from "@/lib/useChartZoom";
+import { ChartZoomBar } from "./ChartZoomReset";
 
 interface CandleDto {
   t: number;
@@ -363,6 +366,31 @@ export function AdvancedChart({
     });
   }, [enriched, overlays.signals]);
 
+  // Drag-to-zoom state shared by every chart frame so the price, volume,
+  // RSI, and stochastic panes stay perfectly aligned at all times.
+  const zoom = useChartZoom<string>();
+  const xDomain = zoom.xDomain;
+  const visibleRows = useMemo(() => {
+    if (!xDomain) return rows;
+    const [lo, hi] = xDomain;
+    return rows.filter((r) => r.label >= lo && r.label <= hi);
+  }, [rows, xDomain]);
+  // Tag signals with their X-axis label so we can filter them by zoom window
+  // without depending on the original row index (which would shift after a
+  // visibility filter).
+  const labeledSignals = useMemo(
+    () =>
+      signals
+        .map((m) => ({ ...m, label: rows[m.i]?.label }))
+        .filter((m): m is SignalMarker & { label: string } => !!m.label),
+    [signals, rows],
+  );
+  const visibleSignals = useMemo(() => {
+    if (!xDomain) return labeledSignals;
+    const [lo, hi] = xDomain;
+    return labeledSignals.filter((m) => m.label >= lo && m.label <= hi);
+  }, [labeledSignals, xDomain]);
+
   // Rolling 20-period high/low for swing levels (mainstream Donchian-ish).
   const swingLevels = useMemo(() => {
     if (!enriched) return null;
@@ -460,16 +488,18 @@ export function AdvancedChart({
         </div>
       ) : (
         <>
+          <ChartZoomBar isZoomed={zoom.isZoomed} onReset={zoom.reset} />
           <PriceFrame
-            rows={rows}
+            rows={visibleRows}
             overlays={overlays}
             swingLevels={overlays.swingLevels ? swingLevels : null}
-            signals={overlays.signals ? signals : []}
+            signals={overlays.signals ? visibleSignals : []}
             channelMeta={overlays.regression ? data?.regressionChannel ?? null : null}
+            zoom={zoom}
           />
 
-          {showRsi ? <RsiFrame rows={rows} /> : null}
-          {showStoch ? <StochFrame rows={rows} /> : null}
+          {showRsi ? <RsiFrame rows={visibleRows} zoom={zoom} /> : null}
+          {showStoch ? <StochFrame rows={visibleRows} zoom={zoom} /> : null}
 
           {overlays.swingLevels && swingLevels ? (
             <SwingLevelsCard sl={swingLevels} perspective={perspective} />
@@ -700,24 +730,32 @@ function PriceFrame({
   swingLevels,
   signals,
   channelMeta,
+  zoom,
 }: {
   rows: Row[];
   overlays: OverlayState;
   swingLevels: SwingLevels | null;
-  signals: SignalMarker[];
+  signals: Array<SignalMarker & { label?: string }>;
   channelMeta: LogChannelResult | null;
+  zoom: UseChartZoom<string>;
 }) {
   // We pass `channelMeta` only so the legend can show the trend's CAGR/σ if
   // the regression overlay is on; the overlay shape itself is rendered from
   // per-row regFit / regPlus1 / regPlus2 / regMinus1 / regMinus2 fields.
   void channelMeta;
   return (
-    <div className="rounded-lg border border-border bg-bg-subtle p-3">
+    <div
+      className="rounded-lg border border-border bg-bg-subtle p-3 select-none"
+      onDoubleClick={zoom.onDoubleClick}
+    >
       <div className="h-[420px] w-full">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
             data={rows}
             margin={{ top: 10, right: 16, left: 0, bottom: 0 }}
+            onMouseDown={zoom.onMouseDown}
+            onMouseMove={zoom.onMouseMove}
+            onMouseUp={zoom.onMouseUp}
           >
             <XAxis
               dataKey="label"
@@ -870,14 +908,14 @@ function PriceFrame({
               </>
             ) : null}
             {signals.map((m, k) => {
-              const row = rows[m.i];
-              if (!row) return null;
+              const lbl = m.label ?? rows[m.i]?.label;
+              if (!lbl) return null;
               const isBuy = m.side === "buy";
               return (
                 <ReferenceDot
                   key={`sig-${k}`}
                   yAxisId="price"
-                  x={row.label}
+                  x={lbl}
                   y={m.price}
                   r={5}
                   fill={isBuy ? "#34d399" : "#f87171"}
@@ -940,12 +978,28 @@ function PriceFrame({
                 />
               </>
             ) : null}
+            {zoom.refAreaLeft != null && zoom.refAreaRight != null ? (
+              <ReferenceArea
+                yAxisId="price"
+                x1={zoom.refAreaLeft}
+                x2={zoom.refAreaRight}
+                strokeOpacity={0.3}
+                fill="#3ea6ff"
+                fillOpacity={0.08}
+              />
+            ) : null}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
       <div className="mt-2 h-[80px] w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={rows} margin={{ top: 0, right: 16, left: 0, bottom: 0 }}>
+          <ComposedChart
+            data={rows}
+            margin={{ top: 0, right: 16, left: 0, bottom: 0 }}
+            onMouseDown={zoom.onMouseDown}
+            onMouseMove={zoom.onMouseMove}
+            onMouseUp={zoom.onMouseUp}
+          >
             <XAxis
               dataKey="label"
               tick={{ fill: "#9aa3b2", fontSize: 10 }}
@@ -959,6 +1013,15 @@ function PriceFrame({
               tickFormatter={(v) => fmtMoneyCompact(v)}
             />
             <Bar dataKey="volume" fill="#2c3445" isAnimationActive={false} />
+            {zoom.refAreaLeft != null && zoom.refAreaRight != null ? (
+              <ReferenceArea
+                x1={zoom.refAreaLeft}
+                x2={zoom.refAreaRight}
+                strokeOpacity={0.3}
+                fill="#3ea6ff"
+                fillOpacity={0.08}
+              />
+            ) : null}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
@@ -966,9 +1029,18 @@ function PriceFrame({
   );
 }
 
-function RsiFrame({ rows }: { rows: Row[] }) {
+function RsiFrame({
+  rows,
+  zoom,
+}: {
+  rows: Row[];
+  zoom: UseChartZoom<string>;
+}) {
   return (
-    <div className="rounded-lg border border-border bg-bg-subtle p-3">
+    <div
+      className="rounded-lg border border-border bg-bg-subtle p-3 select-none"
+      onDoubleClick={zoom.onDoubleClick}
+    >
       <div className="mb-1 flex items-baseline justify-between px-1 text-[11px] font-medium uppercase tracking-wider text-ink-muted">
         <span>RSI(14)</span>
         <span className="text-[10px] text-ink-dim">
@@ -977,7 +1049,13 @@ function RsiFrame({ rows }: { rows: Row[] }) {
       </div>
       <div className="h-[140px] w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={rows} margin={{ top: 6, right: 16, left: 0, bottom: 0 }}>
+          <ComposedChart
+            data={rows}
+            margin={{ top: 6, right: 16, left: 0, bottom: 0 }}
+            onMouseDown={zoom.onMouseDown}
+            onMouseMove={zoom.onMouseMove}
+            onMouseUp={zoom.onMouseUp}
+          >
             <XAxis dataKey="label" tick={{ fill: "#9aa3b2", fontSize: 10 }} stroke="#2c3445" minTickGap={48} />
             <YAxis
               tick={{ fill: "#9aa3b2", fontSize: 10 }}
@@ -1010,6 +1088,15 @@ function RsiFrame({ rows }: { rows: Row[] }) {
               isAnimationActive={false}
               name="RSI"
             />
+            {zoom.refAreaLeft != null && zoom.refAreaRight != null ? (
+              <ReferenceArea
+                x1={zoom.refAreaLeft}
+                x2={zoom.refAreaRight}
+                strokeOpacity={0.3}
+                fill="#3ea6ff"
+                fillOpacity={0.08}
+              />
+            ) : null}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
@@ -1017,9 +1104,18 @@ function RsiFrame({ rows }: { rows: Row[] }) {
   );
 }
 
-function StochFrame({ rows }: { rows: Row[] }) {
+function StochFrame({
+  rows,
+  zoom,
+}: {
+  rows: Row[];
+  zoom: UseChartZoom<string>;
+}) {
   return (
-    <div className="rounded-lg border border-border bg-bg-subtle p-3">
+    <div
+      className="rounded-lg border border-border bg-bg-subtle p-3 select-none"
+      onDoubleClick={zoom.onDoubleClick}
+    >
       <div className="mb-1 flex items-baseline justify-between px-1 text-[11px] font-medium uppercase tracking-wider text-ink-muted">
         <span>Stochastic (14,3,3)</span>
         <span className="text-[10px] text-ink-dim">
@@ -1028,7 +1124,13 @@ function StochFrame({ rows }: { rows: Row[] }) {
       </div>
       <div className="h-[140px] w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <ComposedChart data={rows} margin={{ top: 6, right: 16, left: 0, bottom: 0 }}>
+          <ComposedChart
+            data={rows}
+            margin={{ top: 6, right: 16, left: 0, bottom: 0 }}
+            onMouseDown={zoom.onMouseDown}
+            onMouseMove={zoom.onMouseMove}
+            onMouseUp={zoom.onMouseUp}
+          >
             <XAxis dataKey="label" tick={{ fill: "#9aa3b2", fontSize: 10 }} stroke="#2c3445" minTickGap={48} />
             <YAxis
               tick={{ fill: "#9aa3b2", fontSize: 10 }}
@@ -1069,6 +1171,15 @@ function StochFrame({ rows }: { rows: Row[] }) {
               isAnimationActive={false}
               name="%D"
             />
+            {zoom.refAreaLeft != null && zoom.refAreaRight != null ? (
+              <ReferenceArea
+                x1={zoom.refAreaLeft}
+                x2={zoom.refAreaRight}
+                strokeOpacity={0.3}
+                fill="#3ea6ff"
+                fillOpacity={0.08}
+              />
+            ) : null}
           </ComposedChart>
         </ResponsiveContainer>
       </div>

@@ -1,10 +1,12 @@
 "use client";
 
+import { useMemo } from "react";
 import {
   CartesianGrid,
   Legend,
   Line,
   LineChart,
+  ReferenceArea,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -13,6 +15,8 @@ import {
 
 import type { ReinvestComparison } from "@/lib/dividends";
 import { fmtMoney, fmtMoneyCompact, fmtPct } from "@/lib/format";
+import { useChartZoom } from "@/lib/useChartZoom";
+import { ChartZoomBar } from "./ChartZoomReset";
 
 interface MergedPoint {
   date: string;
@@ -51,55 +55,68 @@ export function ReinvestCompareChart({
   const reinvestAltSeries = comparison.reinvestAlt?.series;
   const principalAltSeries = comparison.principalAlt?.series;
 
-  if (
-    !reinvestSeries ||
-    !noReinvestSeries ||
-    reinvestSeries.length === 0 ||
-    noReinvestSeries.length === 0
-  ) {
+  const merged = useMemo<MergedPoint[]>(() => {
+    if (
+      !reinvestSeries ||
+      !noReinvestSeries ||
+      reinvestSeries.length === 0 ||
+      noReinvestSeries.length === 0
+    ) {
+      return [];
+    }
+    // Merge by date — both series come from the same chronological walk so
+    // they should have identical date sequences, but be defensive.
+    const byDate = new Map<string, MergedPoint>();
+    function ensure(date: string): MergedPoint {
+      let p = byDate.get(date);
+      if (!p) {
+        p = { date };
+        byDate.set(date, p);
+      }
+      return p;
+    }
+    for (const p of reinvestSeries) {
+      const m = ensure(p.date);
+      m.reinvest = p.value;
+      m.invested = m.invested ?? p.invested;
+    }
+    for (const p of noReinvestSeries) {
+      const m = ensure(p.date);
+      m.noReinvest = p.value;
+      m.invested = m.invested ?? p.invested;
+    }
+    if (reinvestAltSeries) {
+      for (const p of reinvestAltSeries) {
+        const m = ensure(p.date);
+        m.reinvestAlt = p.value;
+        m.invested = m.invested ?? p.invested;
+      }
+    }
+    if (principalAltSeries) {
+      for (const p of principalAltSeries) {
+        const m = ensure(p.date);
+        m.principalAlt = p.value;
+        m.invested = m.invested ?? p.invested;
+      }
+    }
+    return downsample(
+      Array.from(byDate.values()).sort((a, b) =>
+        a.date < b.date ? -1 : a.date > b.date ? 1 : 0,
+      ),
+    );
+  }, [reinvestSeries, noReinvestSeries, reinvestAltSeries, principalAltSeries]);
+
+  const zoom = useChartZoom<string>();
+  const xDomain = zoom.xDomain;
+  const visible = useMemo(() => {
+    if (!xDomain) return merged;
+    const [lo, hi] = xDomain;
+    return merged.filter((d) => d.date >= lo && d.date <= hi);
+  }, [merged, xDomain]);
+
+  if (merged.length === 0) {
     return null;
   }
-
-  // Merge by date — both series come from the same chronological walk so
-  // they should have identical date sequences, but be defensive.
-  const byDate = new Map<string, MergedPoint>();
-  function ensure(date: string): MergedPoint {
-    let p = byDate.get(date);
-    if (!p) {
-      p = { date };
-      byDate.set(date, p);
-    }
-    return p;
-  }
-  for (const p of reinvestSeries) {
-    const m = ensure(p.date);
-    m.reinvest = p.value;
-    m.invested = m.invested ?? p.invested;
-  }
-  for (const p of noReinvestSeries) {
-    const m = ensure(p.date);
-    m.noReinvest = p.value;
-    m.invested = m.invested ?? p.invested;
-  }
-  if (reinvestAltSeries) {
-    for (const p of reinvestAltSeries) {
-      const m = ensure(p.date);
-      m.reinvestAlt = p.value;
-      m.invested = m.invested ?? p.invested;
-    }
-  }
-  if (principalAltSeries) {
-    for (const p of principalAltSeries) {
-      const m = ensure(p.date);
-      m.principalAlt = p.value;
-      m.invested = m.invested ?? p.invested;
-    }
-  }
-  const merged = downsample(
-    Array.from(byDate.values()).sort((a, b) =>
-      a.date < b.date ? -1 : a.date > b.date ? 1 : 0,
-    ),
-  );
 
   const liftAbs = comparison.reinvestLift;
   const liftPct =
@@ -174,11 +191,18 @@ export function ReinvestCompareChart({
           ) : null}
         </div>
       ) : null}
-      <div className="h-[260px] w-full">
+      <ChartZoomBar isZoomed={zoom.isZoomed} onReset={zoom.reset} className="mb-1" />
+      <div
+        className="h-[260px] w-full select-none"
+        onDoubleClick={zoom.onDoubleClick}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
-            data={merged}
+            data={visible}
             margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
+            onMouseDown={zoom.onMouseDown}
+            onMouseMove={zoom.onMouseMove}
+            onMouseUp={zoom.onMouseUp}
           >
             <CartesianGrid stroke="#1f2530" strokeDasharray="3 3" />
             <XAxis
@@ -192,6 +216,7 @@ export function ReinvestCompareChart({
               stroke="#2c3445"
               tickFormatter={(v) => fmtMoneyCompact(v)}
               width={70}
+              domain={["auto", "auto"]}
             />
             <Tooltip
               contentStyle={{
@@ -265,6 +290,15 @@ export function ReinvestCompareChart({
               isAnimationActive={false}
               connectNulls
             />
+            {zoom.refAreaLeft != null && zoom.refAreaRight != null ? (
+              <ReferenceArea
+                x1={zoom.refAreaLeft}
+                x2={zoom.refAreaRight}
+                strokeOpacity={0.3}
+                fill="#3ea6ff"
+                fillOpacity={0.08}
+              />
+            ) : null}
           </LineChart>
         </ResponsiveContainer>
       </div>
