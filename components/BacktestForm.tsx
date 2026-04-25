@@ -82,6 +82,18 @@ export function BacktestForm() {
       setSubmitError("티커를 한 개 이상 입력해주세요.");
       return;
     }
+    if (payload.tickers.length > 10) {
+      setSubmitError("티커는 최대 10개까지 입력할 수 있어요.");
+      return;
+    }
+    if (!Number.isFinite(payload.amount) || payload.amount <= 0) {
+      setSubmitError("매수 금액은 0보다 큰 숫자여야 합니다.");
+      return;
+    }
+    if (payload.mode === "custom" && payload.start && payload.end && payload.start >= payload.end) {
+      setSubmitError("시작일이 종료일보다 빨라야 합니다.");
+      return;
+    }
 
     setLoading(true);
     try {
@@ -204,7 +216,10 @@ export function BacktestForm() {
             </div>
           </Field>
 
-          <Field label="매수 금액 (USD)">
+          <Field
+            label="매수 금액 (USD, 티커당)"
+            hint="여러 티커 입력 시, 매 주기마다 각 티커에 동일하게 이 금액을 매수합니다."
+          >
             <div className="relative">
               <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted">
                 $
@@ -212,11 +227,37 @@ export function BacktestForm() {
               <input
                 type="number"
                 min={1}
-                step={50}
-                value={amount}
-                onChange={(e) => setAmount(Number(e.target.value))}
+                step="any"
+                inputMode="decimal"
+                value={Number.isFinite(amount) ? amount : ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") {
+                    setAmount(NaN);
+                    return;
+                  }
+                  const n = Number(v);
+                  setAmount(Number.isFinite(n) ? n : NaN);
+                }}
                 className={classNames(inputCls, "pl-6")}
               />
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {[100, 250, 500, 1000, 2000].map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setAmount(v)}
+                  className={classNames(
+                    "rounded-md border px-2 py-1 text-[11px] font-medium transition",
+                    amount === v
+                      ? "border-accent bg-accent/15 text-accent"
+                      : "border-border bg-bg-subtle text-ink-muted hover:border-border-strong hover:text-ink",
+                  )}
+                >
+                  ${v.toLocaleString()}
+                </button>
+              ))}
             </div>
           </Field>
 
@@ -229,6 +270,15 @@ export function BacktestForm() {
             />
             분수 매수 허용 (해제 시 정수 주식만, 잔액 이월)
           </label>
+
+          <MultiTickerHint
+            tickerCount={tickersRaw
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean).length}
+            amount={amount}
+            frequency={frequency}
+          />
 
           <button
             type="submit"
@@ -295,9 +345,11 @@ const inputCls =
 
 function Field({
   label,
+  hint,
   children,
 }: {
   label: string;
+  hint?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -306,6 +358,33 @@ function Field({
         {label}
       </div>
       {children}
+      {hint ? (
+        <div className="mt-1.5 text-[11px] leading-relaxed text-ink-dim">
+          {hint}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MultiTickerHint({
+  tickerCount,
+  amount,
+  frequency,
+}: {
+  tickerCount: number;
+  amount: number;
+  frequency: Frequency;
+}) {
+  if (tickerCount < 2 || !Number.isFinite(amount) || amount <= 0) return null;
+  const total = amount * tickerCount;
+  const perPeriod = `매 ${FREQ_LABEL[frequency]}`;
+  return (
+    <div className="mt-3 rounded-md border border-border bg-bg-subtle px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
+      <span className="text-ink">{tickerCount}개 티커</span> × $
+      {amount.toLocaleString()} ={" "}
+      <span className="text-accent">${total.toLocaleString()}</span>
+      <span className="text-ink-dim"> / {perPeriod}</span>
     </div>
   );
 }
