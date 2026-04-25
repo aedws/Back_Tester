@@ -167,9 +167,24 @@ function toIso(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+export interface DividendEvent {
+  /** ISO date (YYYY-MM-DD, UTC). */
+  date: string;
+  /** Per-share cash distribution. */
+  amount: number;
+}
+
+export interface RawPricePoint extends PricePoint {
+  /** Unadjusted (price-return only) close — useful for separating dividend
+   * cash flow from price action. */
+  rawClose: number;
+}
+
 export async function fetchPrices(args: FetchPricesArgs): Promise<{
   ticker: string;
   prices: PricePoint[];
+  rawPrices: RawPricePoint[];
+  dividends: DividendEvent[];
 }> {
   const ticker = args.ticker.trim().toUpperCase();
   if (!ticker) throw new Error("Ticker is empty");
@@ -208,17 +223,131 @@ export async function fetchPrices(args: FetchPricesArgs): Promise<{
 
   // Use adjclose when available (dividend & split adjusted), fall back to close.
   const prices: PricePoint[] = [];
+  const rawPrices: RawPricePoint[] = [];
   for (const q of quotes) {
     const d = q.date instanceof Date ? q.date : new Date(q.date as unknown as string);
     if (isNaN(d.getTime())) continue;
+    const close = q.close as number | null | undefined;
     const adj = (q.adjclose ?? q.close) as number | null | undefined;
     if (adj === null || adj === undefined || !Number.isFinite(adj)) continue;
-    prices.push({ date: toIso(d), close: adj });
+    const iso = toIso(d);
+    prices.push({ date: iso, close: adj });
+    if (typeof close === "number" && Number.isFinite(close) && close > 0) {
+      rawPrices.push({ date: iso, close: adj, rawClose: close });
+    }
   }
 
   if (prices.length === 0) {
     throw new Error(`No usable adjusted prices for '${ticker}'`);
   }
 
-  return { ticker, prices };
+  const dividends = extractDividends(chart?.events);
+  return { ticker, prices, rawPrices, dividends };
+}
+
+function extractDividends(events: unknown): DividendEvent[] {
+  if (!events || typeof events !== "object") return [];
+  const e = events as { dividends?: unknown };
+  const raw = e.dividends;
+  if (!raw) return [];
+
+  const list: Array<{ date?: unknown; amount?: unknown }> = Array.isArray(raw)
+    ? (raw as Array<{ date?: unknown; amount?: unknown }>)
+    : Object.values(raw as Record<string, { date?: unknown; amount?: unknown }>);
+
+  const out: DividendEvent[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const amt = (item as { amount?: unknown }).amount;
+    if (typeof amt !== "number" || !Number.isFinite(amt) || amt <= 0) continue;
+    const dRaw = (item as { date?: unknown }).date;
+    let d: Date | null = null;
+    if (dRaw instanceof Date) {
+      d = dRaw;
+    } else if (typeof dRaw === "number") {
+      d = new Date(dRaw * (dRaw < 1e12 ? 1000 : 1));
+    } else if (typeof dRaw === "string") {
+      const parsed = new Date(dRaw);
+      d = isNaN(parsed.getTime()) ? null : parsed;
+    }
+    if (!d || isNaN(d.getTime())) continue;
+    out.push({ date: toIso(d), amount: amt });
+  }
+  out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// quoteSummary helper — used to detect covered-call ETFs from name/description.
+// ---------------------------------------------------------------------------
+export interface QuoteSummary {
+  symbol: string;
+  longName: string | null;
+  shortName: string | null;
+  longBusinessSummary: string | null;
+  category: string | null;
+  legalType: string | null;
+  quoteType: string | null;
+  currency: string | null;
+  /** Trailing dividend yield as a fraction (0.07 = 7%). */
+  dividendYield: number | null;
+  /** Trailing annual dividend rate ($ per share). */
+  dividendRate: number | null;
+}
+
+const QS_CACHE = new Map<string, { at: number; data: QuoteSummary | null }>();
+const QS_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours; ETF metadata rarely changes.
+
+export async function fetchQuoteSummary(
+  ticker: string,
+): Promise<QuoteSummary | null> {
+  const sym = ticker.trim().toUpperCase();
+  if (!sym) return null;
+  const cached = QS_CACHE.get(sym);
+  if (cached && Date.now() - cached.at < QS_TTL_MS) return cached.data;
+
+  try {
+    const r = (await yf.quoteSummary(sym, {
+      modules: ["summaryProfile", "summaryDetail", "price", "assetProfile"],
+    })) as {
+      summaryProfile?: { longBusinessSummary?: string };
+      assetProfile?: { longBusinessSummary?: string; category?: string; legalType?: string };
+      summaryDetail?: { dividendYield?: number; dividendRate?: number; trailingAnnualDividendYield?: number; trailingAnnualDividendRate?: number; currency?: string };
+      price?: {
+        longName?: string;
+        shortName?: string;
+        currency?: string;
+        quoteType?: string;
+      };
+    };
+
+    const summary: QuoteSummary = {
+      symbol: sym,
+      longName: r.price?.longName ?? null,
+      shortName: r.price?.shortName ?? null,
+      longBusinessSummary:
+        r.summaryProfile?.longBusinessSummary ??
+        r.assetProfile?.longBusinessSummary ??
+        null,
+      category: r.assetProfile?.category ?? null,
+      legalType: r.assetProfile?.legalType ?? null,
+      quoteType: r.price?.quoteType ?? null,
+      currency: r.price?.currency ?? r.summaryDetail?.currency ?? null,
+      dividendYield:
+        toFiniteOrNull(r.summaryDetail?.dividendYield) ??
+        toFiniteOrNull(r.summaryDetail?.trailingAnnualDividendYield),
+      dividendRate:
+        toFiniteOrNull(r.summaryDetail?.dividendRate) ??
+        toFiniteOrNull(r.summaryDetail?.trailingAnnualDividendRate),
+    };
+    QS_CACHE.set(sym, { at: Date.now(), data: summary });
+    return summary;
+  } catch {
+    QS_CACHE.set(sym, { at: Date.now(), data: null });
+    return null;
+  }
+}
+
+function toFiniteOrNull(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
 }

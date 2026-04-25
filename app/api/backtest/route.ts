@@ -1,7 +1,19 @@
 import { NextResponse } from "next/server";
 
-import { runDca, type DcaResult, type Frequency } from "@/lib/backtest";
-import { fetchPrices, type FetchMode } from "@/lib/yahoo";
+import { runDca, type Frequency } from "@/lib/backtest";
+import type { PerTickerOutcome } from "@/lib/backtestApi";
+import { detectCoveredCall } from "@/lib/coveredCall";
+import {
+  analyseDividends,
+  compareReinvestment,
+  type DividendAnalysis,
+  type ReinvestComparison,
+} from "@/lib/dividends";
+import {
+  fetchPrices,
+  fetchQuoteSummary,
+  type FetchMode,
+} from "@/lib/yahoo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,13 +30,13 @@ interface BacktestRequest {
   fractional?: boolean;
   /** Optional benchmark symbol; defaults to VOO when omitted/null. Send empty string to skip. */
   benchmark?: string | null;
-}
-
-interface PerTickerOutcome {
-  ticker: string;
-  ok: boolean;
-  result?: DcaResult;
-  error?: string;
+  /**
+   * Per-ticker user override of the auto-detected covered-call flag.
+   *  - true  → force "treat as covered-call ETF" (run dividend analytics)
+   *  - false → force "do not treat as covered-call"
+   *  - undefined / missing key → use auto-detection
+   */
+  coveredCallOverrides?: Record<string, boolean>;
 }
 
 const DEFAULT_BENCHMARK = "VOO";
@@ -91,6 +103,13 @@ export async function POST(req: Request) {
     );
   }
 
+  const overrides: Record<string, boolean> = {};
+  if (body.coveredCallOverrides) {
+    for (const [k, v] of Object.entries(body.coveredCallOverrides)) {
+      overrides[k.trim().toUpperCase()] = !!v;
+    }
+  }
+
   // Resolve benchmark. The user can opt out by passing an empty string.
   const benchSymbol =
     body.benchmark === undefined || body.benchmark === null
@@ -104,19 +123,66 @@ export async function POST(req: Request) {
   const settledPromise = Promise.all(
     tickers.map<Promise<PerTickerOutcome>>(async (ticker) => {
       try {
-        const { prices } = await fetchPrices({
+        const fetched = await fetchPrices({
           ticker,
           mode: body.mode,
           years: body.years,
           start: body.start,
           end: body.end,
         });
-        const result = runDca(ticker, prices, {
+        const result = runDca(ticker, fetched.prices, {
           amount,
           frequency: body.frequency,
           fractional: body.fractional ?? true,
         });
-        return { ticker, ok: true, result };
+
+        // Auto-detect covered-call. quoteSummary is best-effort; failures
+        // shouldn't stop the backtest from succeeding.
+        const summary = await fetchQuoteSummary(ticker).catch(() => null);
+        const detection = detectCoveredCall({
+          ticker,
+          summary,
+          dividends: fetched.dividends,
+          lastPrice: result.summary.lastPrice,
+        });
+
+        const userOverride = overrides[ticker];
+        const coveredCallApplied =
+          userOverride !== undefined ? userOverride : detection.detected;
+
+        let dividendAnalysis: DividendAnalysis | undefined;
+        let reinvestComparison: ReinvestComparison | undefined;
+        if (coveredCallApplied && fetched.dividends.length > 0) {
+          dividendAnalysis = analyseDividends({
+            dcaResult: result,
+            rawPrices: fetched.rawPrices,
+            dividends: fetched.dividends,
+            cadence: detection.cadence,
+          });
+          try {
+            reinvestComparison = compareReinvestment({
+              ticker,
+              rawPrices: fetched.rawPrices,
+              dividends: fetched.dividends,
+              amount,
+              frequency: body.frequency,
+              fractional: body.fractional ?? true,
+            });
+          } catch {
+            // Reinvest sim is non-critical — drop silently if it fails.
+            reinvestComparison = undefined;
+          }
+        }
+
+        return {
+          ticker,
+          ok: true,
+          result,
+          detection,
+          coveredCallApplied,
+          dividendAnalysis,
+          reinvestComparison,
+        };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { ticker, ok: false, error: message };

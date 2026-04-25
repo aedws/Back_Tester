@@ -24,6 +24,15 @@
   - 토글 가능한 오버레이: 이평선 5/20/60/120/200, 볼린저 밴드(20, 2σ), RSI(14), Stochastic(14,3,3)
   - 관점 모드: **장기 투자 / 스윙 / 데이** — 인터벌·오버레이·손절익절 룰이 자동 변경
   - **스윙·데이 손절/익절선** (DCA 결과엔 노출 X): ATR(14) ×1.5(데이) / ×2(스윙) 트레일링 + 최근 10/20봉 고저점 지지·저항
+- **커버드콜 ETF 자동 감지 + 배당 재투자 시뮬**:
+  - 화이트리스트(JEPI/JEPQ/QYLD/SPYI/YMAX/YMAG/ULTY/TIGER 미국S&P500커버드콜 등) + 펀드명/설명
+    키워드("covered call", "yieldmax", "커버드콜", "타겟커버드콜") + 분배 빈도/수익률 휴리스틱으로
+    자동 판별
+  - 감지되면 결과 패널 상단에 초록 배지 + 사유 표시. 잘못 감지된 경우 **X 버튼**으로 즉시 끔
+  - 감지되지 않은 종목도 토글로 수동 적용 가능
+  - 분배금 카드: 누적 수령액, trailing 12m 분배수익률, 투자금 대비 cash-on-cash
+  - **재투자 vs 비재투자 비교** — 분배금을 다음 거래일 종가로 즉시 재매수했을 때의 평가액 차이
+  - **주배당(YMAX/YMAG/ULTY 등) 자동 처리** — 분배 빈도를 가격 이벤트 간격에서 직접 추정
 - 매수 내역 테이블 + CSV 다운로드
 
 ## 로컬 개발
@@ -89,10 +98,13 @@ components/
   Card.tsx, Kpi.tsx
 lib/
   backtest.ts                  # DCA 엔진 (순수 TS)
-  yahoo.ts                     # 가격/Quote fetch 래퍼
+  backtestApi.ts               # /api/backtest 응답 타입 (route 파일 외부에서 공유)
+  yahoo.ts                     # 가격/Quote/QuoteSummary/Dividends fetch 래퍼
   marketTickers.ts             # 마켓 마퀴 심볼 목록
   indicators.ts                # MA/BB/RSI/Stoch/ATR/MACD 계산
   resample.ts                  # OHLC 리샘플링 (3m/10m/120m/240m/년봉)
+  coveredCall.ts               # 커버드콜 ETF 자동 감지 (whitelist + 키워드 + cadence)
+  dividends.ts                 # 분배금 분석 + 재투자/비재투자 비교 시뮬
   format.ts
 streamlit-app/                 # (옵션) 기존 Python/Streamlit 버전
   app.py, backtest.py, requirements.txt

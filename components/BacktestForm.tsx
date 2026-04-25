@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import type { DcaResult, Frequency } from "@/lib/backtest";
+import type { BacktestApiResponse, PerTickerOutcome } from "@/lib/backtestApi";
 import type { FetchMode } from "@/lib/yahoo";
 import { classNames } from "@/lib/format";
 
@@ -11,19 +12,6 @@ import { CompareTable } from "./CompareTable";
 import { ResultPanel } from "./ResultPanel";
 
 type PeriodChoice = "10y" | "ny" | "inception" | "custom";
-
-interface PerTickerOutcome {
-  ticker: string;
-  ok: boolean;
-  result?: DcaResult;
-  error?: string;
-}
-
-interface BacktestApiResponse {
-  results: PerTickerOutcome[];
-  benchmark: PerTickerOutcome | null;
-  benchmarkSymbol: string | null;
-}
 
 const FREQ_LABEL: Record<Frequency, string> = {
   daily: "매일",
@@ -55,8 +43,15 @@ export function BacktestForm() {
   const [benchmark, setBenchmark] = useState<PerTickerOutcome | null>(null);
   const [benchmarkSymbol, setBenchmarkSymbol] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /** Per-ticker user override of auto-detected covered-call flag.
+   *  undefined = "use auto", true/false = forced. */
+  const [coveredCallOverrides, setCoveredCallOverrides] = useState<
+    Record<string, boolean>
+  >({});
+  /** Tickers currently being re-fetched after a user toggled the override. */
+  const [refreshing, setRefreshing] = useState<Set<string>>(new Set());
 
-  function buildPayload() {
+  function buildPayload(overrides?: Record<string, boolean>) {
     const tickers = tickersRaw
       .split(",")
       .map((t) => t.trim().toUpperCase())
@@ -77,6 +72,7 @@ export function BacktestForm() {
       frequency,
       amount,
       fractional,
+      coveredCallOverrides: overrides ?? coveredCallOverrides,
     };
   }
 
@@ -86,8 +82,9 @@ export function BacktestForm() {
     setOutcomes(null);
     setBenchmark(null);
     setBenchmarkSymbol(null);
+    setCoveredCallOverrides({});
 
-    const payload = buildPayload();
+    const payload = buildPayload({});
     if (payload.tickers.length === 0) {
       setSubmitError("티커를 한 개 이상 입력해주세요.");
       return;
@@ -128,15 +125,59 @@ export function BacktestForm() {
     }
   }
 
-  const successResults = (outcomes ?? [])
-    .filter((o): o is PerTickerOutcome & { result: DcaResult } => o.ok && !!o.result)
-    .map((o) => o.result);
+  const successOutcomes = (outcomes ?? []).filter(
+    (o): o is PerTickerOutcome & { result: DcaResult } => o.ok && !!o.result,
+  );
+  const successResults = successOutcomes.map((o) => o.result);
 
   const failed = (outcomes ?? []).filter((o) => !o.ok);
   const benchmarkResult: DcaResult | null =
     benchmark && benchmark.ok && benchmark.result ? benchmark.result : null;
   const benchmarkErr =
     benchmark && !benchmark.ok ? benchmark.error ?? null : null;
+
+  async function refetchTicker(ticker: string, applied: boolean) {
+    const sym = ticker.trim().toUpperCase();
+    if (!sym) return;
+
+    const nextOverrides = { ...coveredCallOverrides, [sym]: applied };
+    setCoveredCallOverrides(nextOverrides);
+    setRefreshing((prev) => new Set(prev).add(sym));
+
+    const fullPayload = buildPayload(nextOverrides);
+    // Only re-run for this single ticker; benchmark is unchanged.
+    const singlePayload = { ...fullPayload, tickers: [sym], benchmark: "" };
+    try {
+      const res = await fetch("/api/backtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(singlePayload),
+      });
+      const data = (await res.json()) as Partial<BacktestApiResponse> & {
+        error?: string;
+      };
+      if (!res.ok) throw new Error(data?.error ?? `Request failed (${res.status})`);
+      const updated = data.results?.[0];
+      if (!updated) return;
+      setOutcomes((prev) =>
+        (prev ?? []).map((o) => (o.ticker === sym ? updated : o)),
+      );
+    } catch (err) {
+      // Revert override on failure so the UI stays consistent with server state.
+      setCoveredCallOverrides((prev) => {
+        const c = { ...prev };
+        delete c[sym];
+        return c;
+      });
+      setSubmitError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRefreshing((prev) => {
+        const c = new Set(prev);
+        c.delete(sym);
+        return c;
+      });
+    }
+  }
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_1fr]">
@@ -401,17 +442,19 @@ export function BacktestForm() {
           </div>
         ) : null}
 
-        {successResults.map((r) => (
+        {successOutcomes.map((o) => (
           <ResultPanel
-            key={r.ticker}
-            result={r}
+            key={o.ticker}
+            outcome={o}
             benchmark={
               // Don't compare a ticker against itself.
-              benchmarkResult && benchmarkResult.ticker !== r.ticker
+              benchmarkResult && benchmarkResult.ticker !== o.ticker
                 ? benchmarkResult
                 : null
             }
             benchmarkSymbol={benchmarkSymbol}
+            refreshing={refreshing.has(o.ticker)}
+            onToggleCoveredCall={(applied) => refetchTicker(o.ticker, applied)}
           />
         ))}
       </section>
