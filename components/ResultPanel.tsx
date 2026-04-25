@@ -11,6 +11,10 @@ import { Card, CardBody, CardHeader } from "./Card";
 import { EquityChart } from "./EquityChart";
 import { Kpi } from "./Kpi";
 import { PriceChart } from "./PriceChart";
+import {
+  PromptExportButton,
+  type PromptExportSettings,
+} from "./PromptExportButton";
 import { PurchasesTable } from "./PurchasesTable";
 import { ReinvestCompareChart } from "./ReinvestCompareChart";
 import { WindowDistributionCard } from "./WindowDistributionCard";
@@ -18,15 +22,21 @@ import { WindowDistributionCard } from "./WindowDistributionCard";
 export function ResultPanel({
   outcome,
   benchmark,
+  benchmarkOutcome,
   benchmarkSymbol,
   refreshing,
   onToggleCoveredCall,
+  exportSettings,
 }: {
   outcome: PerTickerOutcome & { result: DcaResult };
   benchmark?: DcaResult | null;
+  /** Full benchmark outcome (used for AI-prompt export). */
+  benchmarkOutcome?: PerTickerOutcome | null;
   benchmarkSymbol?: string | null;
   refreshing?: boolean;
   onToggleCoveredCall?: (applied: boolean) => void;
+  /** When provided, renders an "AI 프롬프트 복사" button in the header. */
+  exportSettings?: PromptExportSettings;
 }) {
   const result = outcome.result;
   const s = result.summary;
@@ -50,12 +60,22 @@ export function ResultPanel({
           </span>
         }
         right={
-          <Link
-            href={`/chart/${encodeURIComponent(s.ticker)}`}
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-[11px] font-medium text-ink-muted transition hover:border-accent hover:text-accent"
-          >
-            상세 차트 →
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            {exportSettings ? (
+              <PromptExportButton
+                outcome={outcome}
+                benchmark={benchmarkOutcome}
+                benchmarkSymbol={benchmarkSymbol}
+                settings={exportSettings}
+              />
+            ) : null}
+            <Link
+              href={`/chart/${encodeURIComponent(s.ticker)}`}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-bg-subtle px-2.5 py-1.5 text-[11px] font-medium text-ink-muted transition hover:border-accent hover:text-accent"
+            >
+              상세 차트 →
+            </Link>
+          </div>
         }
       />
       <CardBody className="space-y-6">

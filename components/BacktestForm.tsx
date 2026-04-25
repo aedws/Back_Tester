@@ -571,9 +571,22 @@ export function BacktestForm() {
                 ? benchmarkResult
                 : null
             }
+            benchmarkOutcome={
+              benchmark && benchmark.ok && benchmark.ticker !== o.ticker
+                ? benchmark
+                : null
+            }
             benchmarkSymbol={benchmarkSymbol}
             refreshing={refreshing.has(o.ticker)}
             onToggleCoveredCall={(applied) => refetchTicker(o.ticker, applied)}
+            exportSettings={{
+              frequency,
+              unitMode,
+              amount: unitMode === "amount" ? amount : undefined,
+              shares: unitMode === "shares" ? shares : undefined,
+              fractional,
+              fractionalShares,
+            }}
           />
         ))}
       </section>

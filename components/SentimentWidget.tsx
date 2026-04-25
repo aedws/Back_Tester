@@ -10,6 +10,8 @@ import {
 } from "@/lib/sentiment";
 import { classNames } from "@/lib/format";
 
+import { SentimentCommentary } from "./SentimentCommentary";
+
 interface ApiResponse extends SentimentResult {
   cached?: boolean;
   ageMs?: number;
@@ -126,6 +128,10 @@ function FullView({
           {error}
         </div>
       ) : null}
+
+      <div className="mt-3">
+        <SentimentCommentary />
+      </div>
 
       <div className="mt-4 grid grid-cols-1 gap-5 lg:grid-cols-[260px_1fr] lg:items-center">
         <div className="flex justify-center lg:justify-start">

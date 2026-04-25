@@ -119,8 +119,40 @@ vercel --prod       # 프로덕션 배포
 | `market:quotes:v1` | 30s | 상단 마켓 마퀴 |
 | `sentiment:v1` | 5m | Fear & Greed |
 | `quoteSummary:v1:<TICKER>` | 6h | 회사명·자산종류·배당률 등 메타 |
+| `yahoo:news:v1` | 15m | Yahoo Finance RSS 헤드라인 (S2 시장 메모용) |
+| `sentiment:commentary:v1` | 30m | Claude Haiku로 만든 한국어 시장 메모 (S2) |
 
 콜드 스타트가 발생해도 KV가 살아있어 두 번째 요청부터는 거의 모두 캐시 히트입니다.
+
+### (선택) Claude API · 자연어 시장 메모
+
+상단 Fear & Greed 위젯에 *오늘의 시장 메모*(한국어 1~2문장) 카드를 추가합니다. F&G
+점수·구성요소·Yahoo Finance 헤드라인을 묶어 30분마다 Claude Haiku에 전달하고, **입력
+시그너처가 직전 라운드와 같으면 LLM 호출 자체를 건너뜁니다.** 시그너처가 다르더라도
+의미상 변화가 없으면 모델이 `NO_CHANGE`만 반환하고 출력 토큰을 거의 쓰지 않도록
+프롬프트되어 있습니다.
+
+설정:
+
+1. [Anthropic 콘솔](https://console.anthropic.com/)에서 API 키 발급.
+2. Vercel 프로젝트 환경 변수에 추가:
+   - `ANTHROPIC_API_KEY` — 필수
+   - `ANTHROPIC_MODEL` — 선택 (기본 `claude-3-5-haiku-latest`)
+3. 재배포. 키가 없으면 메모 카드는 자동으로 비표시됩니다.
+
+비용 가이드 (KV·시그너처 캐시 적용):
+
+- 30분 주기 × 24h = 48회/일 시그너처 체크 → 그중 LLM 실제 호출은 평균 ~20회/일
+- 호출당 입력 ~700토큰 / 출력 평균 ~30토큰 (`NO_CHANGE` 비중이 큼)
+- Haiku 가격 기준 일 약 $0.005, **월 $0.15 수준**
+
+### (선택) AI 분석용 프롬프트 복사
+
+각 결과 패널 우상단의 **"AI 프롬프트 복사"** 버튼은 백테스트 결과 전체를 한국어
+Markdown + 수치표로 정합해 클립보드에 복사합니다. 우리 서버에서는 어떤 LLM도
+호출하지 않으며, 사용자가 ChatGPT / Claude / Gemini 등 자기가 선호하는 모델에 직접
+붙여넣어 자연어 해석을 받을 수 있습니다 (비용 0). 텍스트는 모달에서 미리보기 + 직접
+편집 가능.
 
 ## 폴더 구조
 
