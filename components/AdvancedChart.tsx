@@ -30,7 +30,7 @@ import {
 } from "@/lib/resample";
 import { buildSignals, type SignalMarker } from "@/lib/signals";
 import { classNames, fmtMoneyCompact, fmtPct } from "@/lib/format";
-import { useChartZoom, type UseChartZoom } from "@/lib/useChartZoom";
+import { useChartZoom, type UseChartZoomReturn } from "@/lib/useChartZoom";
 import { ChartZoomBar } from "./ChartZoomReset";
 
 interface CandleDto {
@@ -366,15 +366,10 @@ export function AdvancedChart({
     });
   }, [enriched, overlays.signals]);
 
-  // Drag-to-zoom state shared by every chart frame so the price, volume,
-  // RSI, and stochastic panes stay perfectly aligned at all times.
-  const zoom = useChartZoom<string>();
-  const xDomain = zoom.xDomain;
-  const visibleRows = useMemo(() => {
-    if (!xDomain) return rows;
-    const [lo, hi] = xDomain;
-    return rows.filter((r) => r.label >= lo && r.label <= hi);
-  }, [rows, xDomain]);
+  // Drag/wheel/pinch zoom state shared by every chart frame so the price,
+  // volume, RSI, and stochastic panes stay perfectly aligned at all times.
+  const zoom = useChartZoom({ data: rows, getKey: (r) => r.label });
+  const visibleRows = zoom.visibleData;
   // Tag signals with their X-axis label so we can filter them by zoom window
   // without depending on the original row index (which would shift after a
   // visibility filter).
@@ -386,10 +381,11 @@ export function AdvancedChart({
     [signals, rows],
   );
   const visibleSignals = useMemo(() => {
-    if (!xDomain) return labeledSignals;
-    const [lo, hi] = xDomain;
+    if (!zoom.isZoomed || visibleRows.length === 0) return labeledSignals;
+    const lo = visibleRows[0].label;
+    const hi = visibleRows[visibleRows.length - 1].label;
     return labeledSignals.filter((m) => m.label >= lo && m.label <= hi);
-  }, [labeledSignals, xDomain]);
+  }, [labeledSignals, zoom.isZoomed, visibleRows]);
 
   // Rolling 20-period high/low for swing levels (mainstream Donchian-ish).
   const swingLevels = useMemo(() => {
@@ -489,17 +485,23 @@ export function AdvancedChart({
       ) : (
         <>
           <ChartZoomBar isZoomed={zoom.isZoomed} onReset={zoom.reset} />
-          <PriceFrame
-            rows={visibleRows}
-            overlays={overlays}
-            swingLevels={overlays.swingLevels ? swingLevels : null}
-            signals={overlays.signals ? visibleSignals : []}
-            channelMeta={overlays.regression ? data?.regressionChannel ?? null : null}
-            zoom={zoom}
-          />
+          <div
+            ref={zoom.containerRef}
+            className="space-y-4 touch-none"
+            onDoubleClick={zoom.onDoubleClick}
+          >
+            <PriceFrame
+              rows={visibleRows}
+              overlays={overlays}
+              swingLevels={overlays.swingLevels ? swingLevels : null}
+              signals={overlays.signals ? visibleSignals : []}
+              channelMeta={overlays.regression ? data?.regressionChannel ?? null : null}
+              zoom={zoom}
+            />
 
-          {showRsi ? <RsiFrame rows={visibleRows} zoom={zoom} /> : null}
-          {showStoch ? <StochFrame rows={visibleRows} zoom={zoom} /> : null}
+            {showRsi ? <RsiFrame rows={visibleRows} zoom={zoom} /> : null}
+            {showStoch ? <StochFrame rows={visibleRows} zoom={zoom} /> : null}
+          </div>
 
           {overlays.swingLevels && swingLevels ? (
             <SwingLevelsCard sl={swingLevels} perspective={perspective} />
@@ -737,7 +739,7 @@ function PriceFrame({
   swingLevels: SwingLevels | null;
   signals: Array<SignalMarker & { label?: string }>;
   channelMeta: LogChannelResult | null;
-  zoom: UseChartZoom<string>;
+  zoom: UseChartZoomReturn<Row>;
 }) {
   // We pass `channelMeta` only so the legend can show the trend's CAGR/σ if
   // the regression overlay is on; the overlay shape itself is rendered from
@@ -1034,7 +1036,7 @@ function RsiFrame({
   zoom,
 }: {
   rows: Row[];
-  zoom: UseChartZoom<string>;
+  zoom: UseChartZoomReturn<Row>;
 }) {
   return (
     <div
@@ -1109,7 +1111,7 @@ function StochFrame({
   zoom,
 }: {
   rows: Row[];
-  zoom: UseChartZoom<string>;
+  zoom: UseChartZoomReturn<Row>;
 }) {
   return (
     <div

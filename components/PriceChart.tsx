@@ -67,29 +67,25 @@ export function PriceChart({
     return ds;
   }, [result]);
 
-  const zoom = useChartZoom<string>();
-  const xDomain = zoom.xDomain;
-  const visible = useMemo(() => {
-    if (!xDomain) return data;
-    const [lo, hi] = xDomain;
-    return data.filter((d) => d.date >= lo && d.date <= hi);
-  }, [data, xDomain]);
+  const zoom = useChartZoom({ data, getKey: (d) => d.date });
   const visibleSplits = useMemo(() => {
-    if (!xDomain) return splits;
-    const [lo, hi] = xDomain;
+    if (!zoom.isZoomed || zoom.visibleData.length === 0) return splits;
+    const lo = zoom.visibleData[0].date;
+    const hi = zoom.visibleData[zoom.visibleData.length - 1].date;
     return splits.filter((sp) => sp.date >= lo && sp.date <= hi);
-  }, [splits, xDomain]);
+  }, [splits, zoom.isZoomed, zoom.visibleData]);
 
   return (
     <div className="w-full">
       <ChartZoomBar isZoomed={zoom.isZoomed} onReset={zoom.reset} className="mb-1" />
       <div
-        className="h-[260px] w-full select-none"
+        ref={zoom.containerRef}
+        className="h-[260px] w-full touch-none select-none"
         onDoubleClick={zoom.onDoubleClick}
       >
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart
-            data={visible}
+            data={zoom.visibleData}
             margin={{ top: 10, right: 16, left: 0, bottom: 0 }}
             onMouseDown={zoom.onMouseDown}
             onMouseMove={zoom.onMouseMove}

@@ -71,24 +71,19 @@ function mergeRatios(results: DcaResult[]): MergedRow[] {
 
 export function CompareChart({ results }: { results: DcaResult[] }) {
   const data = useMemo(() => mergeRatios(results), [results]);
-  const zoom = useChartZoom<string>();
-  const xDomain = zoom.xDomain;
-  const visible = useMemo(() => {
-    if (!xDomain) return data;
-    const [lo, hi] = xDomain;
-    return data.filter((d) => d.date >= lo && d.date <= hi);
-  }, [data, xDomain]);
+  const zoom = useChartZoom({ data, getKey: (d) => d.date });
 
   return (
     <div className="w-full">
       <ChartZoomBar isZoomed={zoom.isZoomed} onReset={zoom.reset} className="mb-1" />
       <div
-        className="h-[340px] w-full select-none"
+        ref={zoom.containerRef}
+        className="h-[340px] w-full touch-none select-none"
         onDoubleClick={zoom.onDoubleClick}
       >
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
-            data={visible}
+            data={zoom.visibleData}
             margin={{ top: 10, right: 16, left: 0, bottom: 0 }}
             onMouseDown={zoom.onMouseDown}
             onMouseMove={zoom.onMouseMove}

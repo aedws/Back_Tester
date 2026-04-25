@@ -106,13 +106,7 @@ export function ReinvestCompareChart({
     );
   }, [reinvestSeries, noReinvestSeries, reinvestAltSeries, principalAltSeries]);
 
-  const zoom = useChartZoom<string>();
-  const xDomain = zoom.xDomain;
-  const visible = useMemo(() => {
-    if (!xDomain) return merged;
-    const [lo, hi] = xDomain;
-    return merged.filter((d) => d.date >= lo && d.date <= hi);
-  }, [merged, xDomain]);
+  const zoom = useChartZoom({ data: merged, getKey: (d) => d.date });
 
   if (merged.length === 0) {
     return null;
@@ -193,12 +187,13 @@ export function ReinvestCompareChart({
       ) : null}
       <ChartZoomBar isZoomed={zoom.isZoomed} onReset={zoom.reset} className="mb-1" />
       <div
-        className="h-[260px] w-full select-none"
+        ref={zoom.containerRef}
+        className="h-[260px] w-full touch-none select-none"
         onDoubleClick={zoom.onDoubleClick}
       >
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
-            data={visible}
+            data={zoom.visibleData}
             margin={{ top: 8, right: 16, left: 0, bottom: 0 }}
             onMouseDown={zoom.onMouseDown}
             onMouseMove={zoom.onMouseMove}

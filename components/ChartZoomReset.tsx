@@ -7,7 +7,7 @@
 export function ChartZoomBar({
   isZoomed,
   onReset,
-  hint = "드래그 = 줌 / 더블클릭 = 리셋",
+  hint = "휠 / 핀치 = 줌 · 드래그 = 박스 줌 · 더블클릭 = 리셋",
   className = "",
 }: {
   isZoomed: boolean;
