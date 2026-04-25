@@ -6,6 +6,7 @@ import type { DcaResult } from "./backtest";
 import type { CoveredCallDetection } from "./coveredCall";
 import type { WindowDistribution } from "./distribution";
 import type { DividendAnalysis, ReinvestComparison } from "./dividends";
+import type { SplitEvent } from "./yahoo";
 
 export interface PerTickerOutcome {
   ticker: string;
@@ -22,6 +23,8 @@ export interface PerTickerOutcome {
    * Null when the price history is too short for the requested window.
    */
   windowDistribution?: WindowDistribution | null;
+  /** Stock splits that occurred during the backtest window. */
+  splits?: SplitEvent[];
 }
 
 export interface BacktestApiResponse {

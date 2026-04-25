@@ -5,12 +5,14 @@ import type { PerTickerOutcome } from "@/lib/backtestApi";
 import type { CoveredCallDetection } from "@/lib/coveredCall";
 import type { DividendAnalysis, ReinvestComparison } from "@/lib/dividends";
 import { fmtMoney, fmtNumber, fmtPct, classNames } from "@/lib/format";
+import type { SplitEvent } from "@/lib/yahoo";
 
 import { Card, CardBody, CardHeader } from "./Card";
 import { EquityChart } from "./EquityChart";
 import { Kpi } from "./Kpi";
 import { PriceChart } from "./PriceChart";
 import { PurchasesTable } from "./PurchasesTable";
+import { ReinvestCompareChart } from "./ReinvestCompareChart";
 import { WindowDistributionCard } from "./WindowDistributionCard";
 
 export function ResultPanel({
@@ -120,12 +122,23 @@ export function ResultPanel({
           />
         ) : null}
 
+        {outcome.splits && outcome.splits.length > 0 ? (
+          <SplitsBanner splits={outcome.splits} />
+        ) : null}
+
         {outcome.coveredCallApplied && outcome.dividendAnalysis ? (
           <DividendCard
             ticker={s.ticker}
             analysis={outcome.dividendAnalysis}
             comparison={outcome.reinvestComparison}
             totalInvested={s.totalInvested}
+          />
+        ) : null}
+
+        {outcome.coveredCallApplied && outcome.reinvestComparison ? (
+          <ReinvestCompareChart
+            ticker={s.ticker}
+            comparison={outcome.reinvestComparison}
           />
         ) : null}
 
@@ -152,9 +165,14 @@ export function ResultPanel({
 
         <div className="rounded-lg border border-border bg-bg-subtle p-3">
           <div className="mb-1 px-1 text-xs font-medium uppercase tracking-wider text-ink-muted">
-            Price & buy points
+            Price &amp; buy points
+            {outcome.splits && outcome.splits.length > 0 ? (
+              <span className="ml-2 text-[10px] font-normal text-ink-dim">
+                · 보라색 점선 = 액면분할 시점
+              </span>
+            ) : null}
           </div>
-          <PriceChart result={result} />
+          <PriceChart result={result} splits={outcome.splits} />
         </div>
 
         <PurchasesTable result={result} />
@@ -166,6 +184,31 @@ export function ResultPanel({
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
+
+function SplitsBanner({ splits }: { splits: SplitEvent[] }) {
+  return (
+    <div className="rounded-lg border border-accent-amber/30 bg-accent-amber/5 px-3 py-2 text-xs text-ink-muted">
+      <div className="mb-1 flex items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded-md bg-accent-amber/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-accent-amber">
+          액면 분할 발생
+        </span>
+        <span className="text-[10px] text-ink-dim">
+          ※ Yahoo의 조정종가(adjclose) 기준 시뮬이라 보유 주식 수와 평가액은 자동으로 분할 보정됩니다.
+        </span>
+      </div>
+      <ul className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+        {splits.map((sp) => (
+          <li key={sp.date} className="font-mono">
+            <span className="text-ink">{sp.date}</span>
+            <span className="ml-1.5 text-accent-amber">
+              {sp.label ?? `${sp.ratio}:1`}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
 
 const SOURCE_LABEL: Record<CoveredCallDetection["source"], string> = {
   whitelist: "화이트리스트",

@@ -14,7 +14,7 @@
 
 import { runDca, type DcaResult, type Frequency, type PricePoint } from "./backtest";
 import type { CoveredCallCadence } from "./coveredCall";
-import type { DividendEvent, RawPricePoint } from "./yahoo";
+import type { DividendEvent, RawPricePoint, SplitEvent } from "./yahoo";
 
 export interface DividendAnalysis {
   /** Total per-share distributions paid in the holding window (sum of cash). */
@@ -40,11 +40,24 @@ export interface DividendLedgerRow {
   cashReceived: number;
 }
 
+export interface ReinvestSeriesPoint {
+  date: string;
+  /** Mark-to-market portfolio value (shares × price) + uninvested cash. */
+  value: number;
+  /** Cumulative invested capital (out-of-pocket only). */
+  invested: number;
+}
+
 export interface ReinvestComparison {
   /** "Don't reinvest" — buy on schedule, dividends paid out as cash. */
-  noReinvest: { finalValue: number; totalReturn: number; cashCollected: number };
+  noReinvest: {
+    finalValue: number;
+    totalReturn: number;
+    cashCollected: number;
+    series: ReinvestSeriesPoint[];
+  };
   /** "Reinvest" — same schedule, but each dividend buys more shares immediately. */
-  reinvest: { finalValue: number; totalReturn: number };
+  reinvest: { finalValue: number; totalReturn: number; series: ReinvestSeriesPoint[] };
   /** Drag/lift from reinvestment in dollar terms. */
   reinvestLift: number;
 }
@@ -144,15 +157,35 @@ export function analyseDividends(args: {
  *   close. This converges to the adjclose total-return scenario, with a
  *   small numerical residual due to the next-trading-day reinvestment lag.
  */
-export function compareReinvestment(args: {
+export interface CompareReinvestmentArgs {
   ticker: string;
   rawPrices: ReadonlyArray<RawPricePoint>;
   dividends: ReadonlyArray<DividendEvent>;
-  amount: number;
+  /** Split events from yahoo chart — applied to share count on each ratio day. */
+  splits?: ReadonlyArray<SplitEvent>;
+  /** unitMode: "amount" → use `amount`; "shares" → use `shares` per period. */
+  unitMode?: "amount" | "shares";
+  amount?: number;
+  shares?: number;
   frequency: Frequency;
-  fractional: boolean;
-}): ReinvestComparison {
-  const { ticker, rawPrices, dividends, amount, frequency, fractional } = args;
+  /** amount mode: allow fractional. shares mode: per-period integer by default. */
+  fractional?: boolean;
+  fractionalShares?: boolean;
+}
+
+export function compareReinvestment(args: CompareReinvestmentArgs): ReinvestComparison {
+  const {
+    ticker,
+    rawPrices,
+    dividends,
+    splits = [],
+    unitMode = "amount",
+    amount,
+    shares: sharesPerPeriod,
+    frequency,
+    fractional = true,
+    fractionalShares = false,
+  } = args;
 
   // Build a price series of the *unadjusted* close — this is what we want
   // to use because dividends are paid on top of price movement, not baked
@@ -162,130 +195,192 @@ export function compareReinvestment(args: {
     close: p.rawClose,
   }));
 
-  // Baseline: DCA on raw close, dividends collected as cash on the side.
-  const baseline = runDca(ticker, rawSeries, { amount, frequency, fractional });
-  const baseLast = baseline.equityCurve[baseline.equityCurve.length - 1];
-  const baseFinalValue = baseLast.value;
+  // We need the buy schedule. Reuse runDca on a clone of the price series
+  // to obtain the buy index — we only care about *which dates* are buy days.
+  const scheduleRun = runDca("__schedule__", [...rawSeries], {
+    unitMode,
+    amount,
+    shares: sharesPerPeriod,
+    frequency,
+    fractional,
+    fractionalShares,
+  });
+  const buyDates = new Set(scheduleRun.purchases.map((p) => p.date));
 
-  // Sum cash received from dividends along the baseline schedule.
-  const baseCurveByDate = new Map(baseline.equityCurve.map((e) => [e.date, e]));
-  const baseCurveDates = baseline.equityCurve.map((e) => e.date);
-  let baseCashCollected = 0;
-  for (const ev of dividends) {
-    if (ev.date < baseline.summary.startDate || ev.date > baseline.summary.endDate) {
-      continue;
-    }
-    const shares = sharesAsOfFromMap(ev.date, baseCurveDates, baseCurveByDate);
-    baseCashCollected += shares * ev.amount;
-  }
-
-  const baseInvested = baseLast.invested;
-  const noReinvest = {
-    finalValue: baseFinalValue + baseCashCollected,
-    totalReturn:
-      baseInvested > 0
-        ? (baseFinalValue + baseCashCollected - baseInvested) / baseInvested
-        : NaN,
-    cashCollected: baseCashCollected,
-  };
-
-  // Reinvest path — walk the trading days, apply scheduled buys + dividend
-  // reinvestment in chronological order.
-  const reinvestResult = runDcaWithReinvestment({
+  // Run both scenarios in parallel through one chronological walk to keep
+  // them perfectly aligned, then split into separate series.
+  const out = runReinvestSimulations({
     rawPrices: rawSeries,
+    buyDates,
     dividends,
-    amount,
-    frequency,
+    splits,
+    unitMode,
+    amount: amount ?? 0,
+    sharesPerPeriod: sharesPerPeriod ?? 0,
     fractional,
+    fractionalShares,
   });
 
-  return {
-    noReinvest,
-    reinvest: reinvestResult,
-    reinvestLift: reinvestResult.finalValue - noReinvest.finalValue,
-  };
+  // Tag the ticker (used for debug; not consumed by UI).
+  void ticker;
+
+  return out;
 }
 
-interface ReinvestRun {
-  finalValue: number;
-  totalReturn: number;
-}
-
-function runDcaWithReinvestment(args: {
+interface RunReinvestArgs {
   rawPrices: ReadonlyArray<PricePoint>;
+  buyDates: Set<string>;
   dividends: ReadonlyArray<DividendEvent>;
+  splits: ReadonlyArray<SplitEvent>;
+  unitMode: "amount" | "shares";
   amount: number;
-  frequency: Frequency;
+  sharesPerPeriod: number;
   fractional: boolean;
-}): ReinvestRun {
-  const { rawPrices, dividends, amount, frequency, fractional } = args;
+  fractionalShares: boolean;
+}
 
-  // We need to know which days are scheduled buy days. Reuse runDca on a
-  // clone of the price series to obtain the buy index — we only care about
-  // *which dates* are buy dates.
-  const baseline = runDca("__bench__", [...rawPrices], {
+/**
+ * Walk trading days once, advancing both "no reinvest" and "reinvest"
+ * scenarios in lockstep. Splits are applied at the start of the trading
+ * day they're recorded for (Yahoo's convention) by multiplying the share
+ * count by the ratio.
+ */
+function runReinvestSimulations(args: RunReinvestArgs): ReinvestComparison {
+  const {
+    rawPrices,
+    buyDates,
+    dividends,
+    splits,
+    unitMode,
     amount,
-    frequency,
+    sharesPerPeriod,
     fractional,
-  });
-  const buyDates = new Set(baseline.purchases.map((p) => p.date));
+    fractionalShares,
+  } = args;
 
-  // Pre-bucket dividends by date.
   const divByDate = new Map<string, number>();
   for (const ev of dividends) {
     divByDate.set(ev.date, (divByDate.get(ev.date) ?? 0) + ev.amount);
   }
+  const splitByDate = new Map<string, number>();
+  for (const sp of splits) {
+    splitByDate.set(sp.date, (splitByDate.get(sp.date) ?? 1) * sp.ratio);
+  }
 
-  // Walk forward, executing buys + reinvestment.
-  let shares = 0;
-  let invested = 0;
-  let scheduleCash = 0; // unused fractional residual from scheduled buys
-  let pendingDividendCash = 0; // dividends waiting for next trading day reinvest
+  // ---- "no reinvest" state ----------------------------------------------
+  let nrShares = 0;
+  let nrInvested = 0;
+  let nrScheduleCash = 0; // scheduled-buy fractional residual
+  let nrCashCollected = 0;
+  const nrSeries: ReinvestSeriesPoint[] = [];
+
+  // ---- "reinvest" state -------------------------------------------------
+  let rShares = 0;
+  let rInvested = 0;
+  let rScheduleCash = 0;
+  let rPendingDiv = 0; // dividend cash waiting for next trading day
+  const rSeries: ReinvestSeriesPoint[] = [];
 
   for (const point of rawPrices) {
     const price = point.close;
     if (!Number.isFinite(price) || price <= 0) continue;
 
-    // 1) Reinvest dividends pending from previous trading days.
-    if (pendingDividendCash > 0) {
-      if (fractional) {
-        shares += pendingDividendCash / price;
-      } else {
-        const wholeShares = Math.floor(pendingDividendCash / price);
-        shares += wholeShares;
-        pendingDividendCash -= wholeShares * price;
-      }
-      if (fractional) pendingDividendCash = 0;
+    // (0) Apply split at start of this trading day, if any. Both scenarios
+    //     hold the same underlying ticker so both share counts scale.
+    const sp = splitByDate.get(point.date);
+    if (sp && sp > 0 && sp !== 1) {
+      nrShares *= sp;
+      rShares *= sp;
     }
 
-    // 2) Scheduled buy on this date (if any).
+    // (1) Reinvest path: drain pending dividend cash into shares.
+    if (rPendingDiv > 0) {
+      if (fractional) {
+        rShares += rPendingDiv / price;
+        rPendingDiv = 0;
+      } else {
+        const whole = Math.floor(rPendingDiv / price);
+        rShares += whole;
+        rPendingDiv -= whole * price;
+      }
+    }
+
+    // (2) Scheduled buy on this date (if any).
     if (buyDates.has(point.date)) {
-      const budget = amount + scheduleCash;
-      if (fractional) {
-        shares += budget / price;
-        invested += budget;
-        scheduleCash = 0;
+      if (unitMode === "shares") {
+        const target = fractionalShares
+          ? sharesPerPeriod
+          : Math.floor(sharesPerPeriod);
+        if (target > 0) {
+          const cost = target * price;
+          nrShares += target;
+          nrInvested += cost;
+          rShares += target;
+          rInvested += cost;
+        }
       } else {
-        const wholeShares = Math.floor(budget / price);
-        shares += wholeShares;
-        invested += wholeShares * price;
-        scheduleCash = budget - wholeShares * price;
+        // amount mode — both paths get the same out-of-pocket budget.
+        const nrBudget = amount + nrScheduleCash;
+        const rBudget = amount + rScheduleCash;
+        if (fractional) {
+          nrShares += nrBudget / price;
+          nrInvested += nrBudget;
+          nrScheduleCash = 0;
+          rShares += rBudget / price;
+          rInvested += rBudget;
+          rScheduleCash = 0;
+        } else {
+          const nrWhole = Math.floor(nrBudget / price);
+          nrShares += nrWhole;
+          nrInvested += nrWhole * price;
+          nrScheduleCash = nrBudget - nrWhole * price;
+          const rWhole = Math.floor(rBudget / price);
+          rShares += rWhole;
+          rInvested += rWhole * price;
+          rScheduleCash = rBudget - rWhole * price;
+        }
       }
     }
 
-    // 3) Distribution declared on this date — credit cash; reinvest tomorrow.
-    const div = divByDate.get(point.date);
-    if (div) {
-      pendingDividendCash += shares * div;
+    // (3) Distribution declared today.
+    const dPerShare = divByDate.get(point.date);
+    if (dPerShare) {
+      nrCashCollected += nrShares * dPerShare;
+      rPendingDiv += rShares * dPerShare;
     }
+
+    nrSeries.push({
+      date: point.date,
+      value: nrShares * price + nrCashCollected,
+      invested: nrInvested,
+    });
+    rSeries.push({
+      date: point.date,
+      value: rShares * price + rPendingDiv,
+      invested: rInvested,
+    });
   }
 
   const lastPrice = rawPrices[rawPrices.length - 1]?.close ?? 0;
-  // Any leftover dividend cash that we never had a chance to reinvest counts
-  // as cash on hand at the end — fold it into final value.
-  const finalValue = shares * lastPrice + pendingDividendCash;
-  const totalReturn = invested > 0 ? (finalValue - invested) / invested : NaN;
-  return { finalValue, totalReturn };
+  const noReinvestFinal = nrShares * lastPrice + nrCashCollected;
+  const reinvestFinal = rShares * lastPrice + rPendingDiv;
+
+  return {
+    noReinvest: {
+      finalValue: noReinvestFinal,
+      totalReturn:
+        nrInvested > 0 ? (noReinvestFinal - nrInvested) / nrInvested : NaN,
+      cashCollected: nrCashCollected,
+      series: nrSeries,
+    },
+    reinvest: {
+      finalValue: reinvestFinal,
+      totalReturn:
+        rInvested > 0 ? (reinvestFinal - rInvested) / rInvested : NaN,
+      series: rSeries,
+    },
+    reinvestLift: reinvestFinal - noReinvestFinal,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -313,29 +408,6 @@ function sharesAsOf(
   }
   if (best < 0) return 0;
   return sharesByDate.get(sortedDates[best]) ?? 0;
-}
-
-function sharesAsOfFromMap<T extends { shares: number }>(
-  isoDate: string,
-  sortedDates: ReadonlyArray<string>,
-  byDate: Map<string, T>,
-): number {
-  const exact = byDate.get(isoDate);
-  if (exact !== undefined) return exact.shares;
-  let lo = 0;
-  let hi = sortedDates.length - 1;
-  let best = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (sortedDates[mid] <= isoDate) {
-      best = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  if (best < 0) return 0;
-  return byDate.get(sortedDates[best])?.shares ?? 0;
 }
 
 function shiftIso(iso: string, days: number): string {

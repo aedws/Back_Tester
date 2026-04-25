@@ -53,10 +53,27 @@ export interface DcaResult {
   equityCurve: EquityPoint[];
 }
 
+/**
+ * "amount" — fixed USD per period; shares = amount / price
+ *           (with optional fractional toggle).
+ * "shares" — fixed share count per period; invested = shares × price
+ *           (defaults to integer share count; ignores fractional toggle
+ *            unless `fractionalShares` is explicitly true).
+ */
+export type DcaUnitMode = "amount" | "shares";
+
 export interface RunDcaOptions {
-  amount: number;
+  /** Default "amount" for backward compat. */
+  unitMode?: DcaUnitMode;
+  /** Required when unitMode === "amount". */
+  amount?: number;
+  /** Required when unitMode === "shares". Integer ≥ 1 unless fractionalShares. */
+  shares?: number;
   frequency: Frequency;
+  /** "amount" mode: allow fractional shares. Default true. */
   fractional?: boolean;
+  /** "shares" mode: allow fractional share counts (e.g. 0.5). Default false. */
+  fractionalShares?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,9 +241,23 @@ export function runDca(
   prices: PricePoint[],
   opts: RunDcaOptions,
 ): DcaResult {
-  const { amount, frequency, fractional = true } = opts;
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error("amount must be positive");
+  const {
+    unitMode = "amount",
+    amount,
+    shares: sharesPerPeriod,
+    frequency,
+    fractional = true,
+    fractionalShares = false,
+  } = opts;
+
+  if (unitMode === "amount") {
+    if (!Number.isFinite(amount) || (amount as number) <= 0) {
+      throw new Error("amount must be positive when unitMode='amount'");
+    }
+  } else {
+    if (!Number.isFinite(sharesPerPeriod) || (sharesPerPeriod as number) <= 0) {
+      throw new Error("shares must be positive when unitMode='shares'");
+    }
   }
   if (!prices || prices.length === 0) {
     throw new Error("prices is empty");
@@ -256,26 +287,45 @@ export function runDca(
 
   const purchases: Purchase[] = [];
   let cashCarry = 0;
-  for (const i of buyIdx) {
-    const price = closes[i];
-    const budget = amount + cashCarry;
-    let shares: number;
-    let spent: number;
-    if (fractional) {
-      shares = budget / price;
-      spent = budget;
-      cashCarry = 0;
-    } else {
-      shares = Math.floor(budget / price);
-      spent = shares * price;
-      cashCarry = budget - spent;
+
+  if (unitMode === "shares") {
+    // Constant share count per period — invested cost varies with price.
+    const targetShares = sharesPerPeriod as number;
+    for (const i of buyIdx) {
+      const price = closes[i];
+      const shares = fractionalShares ? targetShares : Math.floor(targetShares);
+      if (shares <= 0) continue;
+      const spent = shares * price;
+      purchases.push({
+        date: isoDates[i],
+        price,
+        shares,
+        invested: spent,
+      });
     }
-    purchases.push({
-      date: isoDates[i],
-      price,
-      shares,
-      invested: spent,
-    });
+  } else {
+    // Fixed USD per period.
+    for (const i of buyIdx) {
+      const price = closes[i];
+      const budget = (amount as number) + cashCarry;
+      let shares: number;
+      let spent: number;
+      if (fractional) {
+        shares = budget / price;
+        spent = budget;
+        cashCarry = 0;
+      } else {
+        shares = Math.floor(budget / price);
+        spent = shares * price;
+        cashCarry = budget - spent;
+      }
+      purchases.push({
+        date: isoDates[i],
+        price,
+        shares,
+        invested: spent,
+      });
+    }
   }
 
   // Forward-fill cumulative shares and invested across the whole price index.

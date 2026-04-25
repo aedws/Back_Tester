@@ -52,9 +52,12 @@ export interface BuildDistributionArgs {
   ticker: string;
   prices: PricePoint[];
   windowYears: number;
-  amount: number;
+  unitMode?: "amount" | "shares";
+  amount?: number;
+  shares?: number;
   frequency: Frequency;
   fractional: boolean;
+  fractionalShares?: boolean;
   /** IRR of the user's actual run. */
   currentIrr: number | null;
   /** Cap on the number of slices we run — defaults to 240 (20y of monthly starts). */
@@ -75,9 +78,12 @@ export function buildWindowDistribution(
     ticker,
     prices,
     windowYears,
+    unitMode = "amount",
     amount,
+    shares,
     frequency,
     fractional,
+    fractionalShares = false,
     currentIrr,
     maxSamples = 240,
   } = args;
@@ -123,7 +129,14 @@ export function buildWindowDistribution(
 
     const slice = sorted.slice(sliceStartIdx, sliceEndIdx);
     try {
-      const result = runDca(ticker, slice, { amount, frequency, fractional });
+      const result = runDca(ticker, slice, {
+        unitMode,
+        amount,
+        shares,
+        frequency,
+        fractional,
+        fractionalShares,
+      });
       const irr = result.summary.irrAnnualized;
       if (irr !== null && Number.isFinite(irr)) {
         samples.push(irr);

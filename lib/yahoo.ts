@@ -174,6 +174,15 @@ export interface DividendEvent {
   amount: number;
 }
 
+export interface SplitEvent {
+  /** ISO date (YYYY-MM-DD, UTC). */
+  date: string;
+  /** numerator / denominator e.g. 4-for-1 → ratio 4. */
+  ratio: number;
+  /** Yahoo's display label, e.g. "4:1". May be undefined. */
+  label?: string;
+}
+
 export interface RawPricePoint extends PricePoint {
   /** Unadjusted (price-return only) close — useful for separating dividend
    * cash flow from price action. */
@@ -185,6 +194,7 @@ export async function fetchPrices(args: FetchPricesArgs): Promise<{
   prices: PricePoint[];
   rawPrices: RawPricePoint[];
   dividends: DividendEvent[];
+  splits: SplitEvent[];
 }> {
   const ticker = args.ticker.trim().toUpperCase();
   if (!ticker) throw new Error("Ticker is empty");
@@ -242,7 +252,8 @@ export async function fetchPrices(args: FetchPricesArgs): Promise<{
   }
 
   const dividends = extractDividends(chart?.events);
-  return { ticker, prices, rawPrices, dividends };
+  const splits = extractSplits(chart?.events);
+  return { ticker, prices, rawPrices, dividends, splits };
 }
 
 function extractDividends(events: unknown): DividendEvent[] {
@@ -272,6 +283,60 @@ function extractDividends(events: unknown): DividendEvent[] {
     }
     if (!d || isNaN(d.getTime())) continue;
     out.push({ date: toIso(d), amount: amt });
+  }
+  out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  return out;
+}
+
+function extractSplits(events: unknown): SplitEvent[] {
+  if (!events || typeof events !== "object") return [];
+  const e = events as { splits?: unknown };
+  const raw = e.splits;
+  if (!raw) return [];
+
+  const list: Array<Record<string, unknown>> = Array.isArray(raw)
+    ? (raw as Array<Record<string, unknown>>)
+    : Object.values(raw as Record<string, Record<string, unknown>>);
+
+  const out: SplitEvent[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const numerator = toFiniteOrNull(item.numerator);
+    const denominator = toFiniteOrNull(item.denominator);
+    let ratio = 0;
+    if (numerator !== null && denominator !== null && denominator !== 0) {
+      ratio = numerator / denominator;
+    } else {
+      const sr = item.splitRatio;
+      if (typeof sr === "string") {
+        const m = sr.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
+        if (m) {
+          const a = Number(m[1]);
+          const b = Number(m[2]);
+          if (Number.isFinite(a) && Number.isFinite(b) && b > 0) ratio = a / b;
+        }
+      }
+    }
+    if (!Number.isFinite(ratio) || ratio <= 0 || ratio === 1) continue;
+
+    const dRaw = item.date;
+    let d: Date | null = null;
+    if (dRaw instanceof Date) d = dRaw;
+    else if (typeof dRaw === "number") d = new Date(dRaw * (dRaw < 1e12 ? 1000 : 1));
+    else if (typeof dRaw === "string") {
+      const parsed = new Date(dRaw);
+      d = isNaN(parsed.getTime()) ? null : parsed;
+    }
+    if (!d || isNaN(d.getTime())) continue;
+
+    const label =
+      typeof item.splitRatio === "string"
+        ? (item.splitRatio as string)
+        : numerator !== null && denominator !== null
+          ? `${numerator}:${denominator}`
+          : undefined;
+
+    out.push({ date: toIso(d), ratio, label });
   }
   out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   return out;

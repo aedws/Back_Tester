@@ -14,6 +14,7 @@ import {
 
 import type { DcaResult } from "@/lib/backtest";
 import { fmtMoney } from "@/lib/format";
+import type { SplitEvent } from "@/lib/yahoo";
 
 interface PricePoint {
   date: string;
@@ -32,7 +33,13 @@ function downsample<T>(points: T[], maxPoints = 800): T[] {
   return out;
 }
 
-export function PriceChart({ result }: { result: DcaResult }) {
+export function PriceChart({
+  result,
+  splits = [],
+}: {
+  result: DcaResult;
+  splits?: SplitEvent[];
+}) {
   const buyByDate = new Map(result.purchases.map((p) => [p.date, p.price]));
 
   const allPoints: PricePoint[] = result.equityCurve.map((e) => ({
@@ -107,6 +114,20 @@ export function PriceChart({ result }: { result: DcaResult }) {
               position: "insideTopLeft",
             }}
           />
+          {splits.map((sp) => (
+            <ReferenceLine
+              key={`split-${sp.date}`}
+              x={sp.date}
+              stroke="#a78bfa"
+              strokeDasharray="2 4"
+              label={{
+                value: `Split ${sp.label ?? `${sp.ratio}:1`}`,
+                fill: "#a78bfa",
+                fontSize: 10,
+                position: "top",
+              }}
+            />
+          ))}
         </ComposedChart>
       </ResponsiveContainer>
     </div>

@@ -13,6 +13,7 @@ import { ResultPanel } from "./ResultPanel";
 import { TickerAutocomplete } from "./TickerAutocomplete";
 
 type PeriodChoice = "10y" | "ny" | "inception" | "custom";
+type UnitMode = "amount" | "shares";
 
 const FREQ_LABEL: Record<Frequency, string> = {
   daily: "매일",
@@ -36,8 +37,11 @@ export function BacktestForm() {
   const [start, setStart] = useState(tenYearsAgo());
   const [end, setEnd] = useState(today());
   const [frequency, setFrequency] = useState<Frequency>("monthly");
+  const [unitMode, setUnitMode] = useState<UnitMode>("amount");
   const [amount, setAmount] = useState(500);
+  const [shares, setShares] = useState(1);
   const [fractional, setFractional] = useState(true);
+  const [fractionalShares, setFractionalShares] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [outcomes, setOutcomes] = useState<PerTickerOutcome[] | null>(null);
@@ -71,8 +75,11 @@ export function BacktestForm() {
       start: mode === "custom" ? start : undefined,
       end: mode === "custom" ? end : undefined,
       frequency,
-      amount,
+      unitMode,
+      amount: unitMode === "amount" ? amount : undefined,
+      shares: unitMode === "shares" ? shares : undefined,
       fractional,
+      fractionalShares,
       coveredCallOverrides: overrides ?? coveredCallOverrides,
     };
   }
@@ -94,9 +101,16 @@ export function BacktestForm() {
       setSubmitError("티커는 최대 10개까지 입력할 수 있어요.");
       return;
     }
-    if (!Number.isFinite(payload.amount) || payload.amount <= 0) {
-      setSubmitError("매수 금액은 0보다 큰 숫자여야 합니다.");
-      return;
+    if (payload.unitMode === "amount") {
+      if (!Number.isFinite(payload.amount) || (payload.amount as number) <= 0) {
+        setSubmitError("매수 금액은 0보다 큰 숫자여야 합니다.");
+        return;
+      }
+    } else {
+      if (!Number.isFinite(payload.shares) || (payload.shares as number) <= 0) {
+        setSubmitError("매수 주식 수는 0보다 큰 숫자여야 합니다.");
+        return;
+      }
     }
     if (payload.mode === "custom" && payload.start && payload.end && payload.start >= payload.end) {
       setSubmitError("시작일이 종료일보다 빨라야 합니다.");
@@ -320,66 +334,151 @@ export function BacktestForm() {
           </Field>
 
           <Field
-            label="매수 금액 (USD, 티커당)"
-            hint="여러 티커 입력 시, 매 주기마다 각 티커에 동일하게 이 금액을 매수합니다."
+            label="매수 단위"
+            hint={
+              unitMode === "amount"
+                ? "회차마다 정한 금액(USD)으로 매수합니다."
+                : "회차마다 정한 주식 수만큼 매수합니다 (가격 변동에 따라 투자금이 달라집니다)."
+            }
           >
-            <div className="relative">
-              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted">
-                $
-              </span>
-              <input
-                type="number"
-                min={1}
-                step="any"
-                inputMode="decimal"
-                value={Number.isFinite(amount) ? amount : ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (v === "") {
-                    setAmount(NaN);
-                    return;
-                  }
-                  const n = Number(v);
-                  setAmount(Number.isFinite(n) ? n : NaN);
-                }}
-                className={classNames(inputCls, "pl-6")}
-              />
-            </div>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {[100, 250, 500, 1000, 2000].map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setAmount(v)}
-                  className={classNames(
-                    "rounded-md border px-2 py-1 text-[11px] font-medium transition",
-                    amount === v
-                      ? "border-accent bg-accent/15 text-accent"
-                      : "border-border bg-bg-subtle text-ink-muted hover:border-border-strong hover:text-ink",
-                  )}
-                >
-                  ${v.toLocaleString()}
-                </button>
-              ))}
+            <div className="grid grid-cols-2 gap-2">
+              <Choice
+                active={unitMode === "amount"}
+                onClick={() => setUnitMode("amount")}
+              >
+                금액 ($)
+              </Choice>
+              <Choice
+                active={unitMode === "shares"}
+                onClick={() => setUnitMode("shares")}
+              >
+                주식 수
+              </Choice>
             </div>
           </Field>
 
-          <label className="mt-1 flex cursor-pointer items-center gap-2 text-sm text-ink-muted">
-            <input
-              type="checkbox"
-              checked={fractional}
-              onChange={(e) => setFractional(e.target.checked)}
-              className="h-4 w-4 rounded border-border bg-bg-subtle accent-accent"
-            />
-            분수 매수 허용 (해제 시 정수 주식만, 잔액 이월)
-          </label>
+          {unitMode === "amount" ? (
+            <Field
+              label="매수 금액 (USD, 티커당)"
+              hint="여러 티커 입력 시, 매 주기마다 각 티커에 동일하게 이 금액을 매수합니다."
+            >
+              <div className="relative">
+                <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted">
+                  $
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  step="any"
+                  inputMode="decimal"
+                  value={Number.isFinite(amount) ? amount : ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") {
+                      setAmount(NaN);
+                      return;
+                    }
+                    const n = Number(v);
+                    setAmount(Number.isFinite(n) ? n : NaN);
+                  }}
+                  className={classNames(inputCls, "pl-6")}
+                />
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {[100, 250, 500, 1000, 2000].map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setAmount(v)}
+                    className={classNames(
+                      "rounded-md border px-2 py-1 text-[11px] font-medium transition",
+                      amount === v
+                        ? "border-accent bg-accent/15 text-accent"
+                        : "border-border bg-bg-subtle text-ink-muted hover:border-border-strong hover:text-ink",
+                    )}
+                  >
+                    ${v.toLocaleString()}
+                  </button>
+                ))}
+              </div>
+            </Field>
+          ) : (
+            <Field
+              label="매수 주식 수 (주, 티커당)"
+              hint="매 주기마다 각 티커에 정확히 이 주식 수만큼 매수합니다 (실제 투자금은 가격에 따라 달라집니다)."
+            >
+              <div className="relative">
+                <input
+                  type="number"
+                  min={1}
+                  step={fractionalShares ? "any" : 1}
+                  inputMode={fractionalShares ? "decimal" : "numeric"}
+                  value={Number.isFinite(shares) ? shares : ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "") {
+                      setShares(NaN);
+                      return;
+                    }
+                    const n = Number(v);
+                    setShares(Number.isFinite(n) ? n : NaN);
+                  }}
+                  className={classNames(inputCls, "pr-10")}
+                />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-ink-muted">
+                  주
+                </span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {[1, 2, 5, 10].map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setShares(v)}
+                    className={classNames(
+                      "rounded-md border px-2 py-1 text-[11px] font-medium transition",
+                      shares === v
+                        ? "border-accent bg-accent/15 text-accent"
+                        : "border-border bg-bg-subtle text-ink-muted hover:border-border-strong hover:text-ink",
+                    )}
+                  >
+                    {v}주
+                  </button>
+                ))}
+              </div>
+            </Field>
+          )}
+
+          {unitMode === "amount" ? (
+            <label className="mt-1 flex cursor-pointer items-center gap-2 text-sm text-ink-muted">
+              <input
+                type="checkbox"
+                checked={fractional}
+                onChange={(e) => setFractional(e.target.checked)}
+                className="h-4 w-4 rounded border-border bg-bg-subtle accent-accent"
+              />
+              분수 매수 허용 (해제 시 정수 주식만, 잔액 이월)
+            </label>
+          ) : (
+            <label className="mt-1 flex cursor-pointer items-center gap-2 text-sm text-ink-muted">
+              <input
+                type="checkbox"
+                checked={fractionalShares}
+                onChange={(e) => setFractionalShares(e.target.checked)}
+                className="h-4 w-4 rounded border-border bg-bg-subtle accent-accent"
+              />
+              소수점 주식 허용 (예: 0.5주)
+            </label>
+          )}
 
           <MultiTickerHint
             tickerCount={tickersRaw
               .split(",")
               .map((t) => t.trim())
               .filter(Boolean).length}
+            unitMode={unitMode}
             amount={amount}
+            shares={shares}
             frequency={frequency}
           />
 
@@ -490,22 +589,38 @@ function Field({
 
 function MultiTickerHint({
   tickerCount,
+  unitMode,
   amount,
+  shares,
   frequency,
 }: {
   tickerCount: number;
+  unitMode: UnitMode;
   amount: number;
+  shares: number;
   frequency: Frequency;
 }) {
-  if (tickerCount < 2 || !Number.isFinite(amount) || amount <= 0) return null;
-  const total = amount * tickerCount;
+  if (tickerCount < 2) return null;
   const perPeriod = `매 ${FREQ_LABEL[frequency]}`;
+  if (unitMode === "amount") {
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    const total = amount * tickerCount;
+    return (
+      <div className="mt-3 rounded-md border border-border bg-bg-subtle px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
+        <span className="text-ink">{tickerCount}개 티커</span> × $
+        {amount.toLocaleString()} ={" "}
+        <span className="text-accent">${total.toLocaleString()}</span>
+        <span className="text-ink-dim"> / {perPeriod}</span>
+      </div>
+    );
+  }
+  if (!Number.isFinite(shares) || shares <= 0) return null;
+  const totalShares = shares * tickerCount;
   return (
     <div className="mt-3 rounded-md border border-border bg-bg-subtle px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
-      <span className="text-ink">{tickerCount}개 티커</span> × $
-      {amount.toLocaleString()} ={" "}
-      <span className="text-accent">${total.toLocaleString()}</span>
-      <span className="text-ink-dim"> / {perPeriod}</span>
+      <span className="text-ink">{tickerCount}개 티커</span> × {shares}주 ={" "}
+      <span className="text-accent">{totalShares}주</span>
+      <span className="text-ink-dim"> / {perPeriod} (실제 투자금은 가격에 따라 달라짐)</span>
     </div>
   );
 }

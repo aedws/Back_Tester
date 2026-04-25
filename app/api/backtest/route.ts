@@ -29,9 +29,16 @@ interface BacktestRequest {
   years?: number;
   start?: string;
   end?: string;
-  amount: number;
+  /** "amount" → fixed USD per period; "shares" → fixed share count per period. */
+  unitMode?: "amount" | "shares";
+  /** Required when unitMode='amount'. */
+  amount?: number;
+  /** Required when unitMode='shares'. */
+  shares?: number;
   frequency: Frequency;
   fractional?: boolean;
+  /** unitMode='shares' fractional share allowance. Default false. */
+  fractionalShares?: boolean;
   /** Optional benchmark symbol; defaults to VOO when omitted/null. Send empty string to skip. */
   benchmark?: string | null;
   /**
@@ -70,12 +77,29 @@ export async function POST(req: Request) {
     );
   }
 
-  const amount = Number(body.amount);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return NextResponse.json(
-      { error: "amount must be a positive number" },
-      { status: 400 },
-    );
+  const unitMode: "amount" | "shares" =
+    body.unitMode === "shares" ? "shares" : "amount";
+
+  let amount: number | undefined;
+  let sharesPerPeriod: number | undefined;
+  if (unitMode === "amount") {
+    const a = Number(body.amount);
+    if (!Number.isFinite(a) || a <= 0) {
+      return NextResponse.json(
+        { error: "amount must be a positive number when unitMode='amount'" },
+        { status: 400 },
+      );
+    }
+    amount = a;
+  } else {
+    const s = Number(body.shares);
+    if (!Number.isFinite(s) || s <= 0) {
+      return NextResponse.json(
+        { error: "shares must be a positive number when unitMode='shares'" },
+        { status: 400 },
+      );
+    }
+    sharesPerPeriod = s;
   }
 
   const allowedFreq: Frequency[] = [
@@ -153,9 +177,12 @@ export async function POST(req: Request) {
           fetchPrices({ ticker, mode: "inception" }).catch(() => null),
         ]);
         const result = runDca(ticker, fetched.prices, {
+          unitMode,
           amount,
+          shares: sharesPerPeriod,
           frequency: body.frequency,
           fractional: body.fractional ?? true,
+          fractionalShares: body.fractionalShares ?? false,
         });
 
         // Auto-detect covered-call. quoteSummary is best-effort; failures
@@ -186,9 +213,13 @@ export async function POST(req: Request) {
               ticker,
               rawPrices: fetched.rawPrices,
               dividends: fetched.dividends,
+              splits: fetched.splits,
+              unitMode,
               amount,
+              shares: sharesPerPeriod,
               frequency: body.frequency,
               fractional: body.fractional ?? true,
+              fractionalShares: body.fractionalShares ?? false,
             });
           } catch {
             // Reinvest sim is non-critical — drop silently if it fails.
@@ -204,15 +235,25 @@ export async function POST(req: Request) {
               ticker,
               prices: inception.prices,
               windowYears,
+              unitMode,
               amount,
+              shares: sharesPerPeriod,
               frequency: body.frequency,
               fractional: body.fractional ?? true,
+              fractionalShares: body.fractionalShares ?? false,
               currentIrr: result.summary.irrAnnualized,
             });
           } catch {
             windowDistribution = null;
           }
         }
+
+        // Filter splits to events that fall inside the actual backtest window.
+        const splitsInWindow = fetched.splits.filter(
+          (sp) =>
+            sp.date >= result.summary.startDate &&
+            sp.date <= result.summary.endDate,
+        );
 
         return {
           ticker,
@@ -223,6 +264,7 @@ export async function POST(req: Request) {
           dividendAnalysis,
           reinvestComparison,
           windowDistribution,
+          splits: splitsInWindow,
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -242,9 +284,12 @@ export async function POST(req: Request) {
             end: body.end,
           });
           const result = runDca(benchSymbol, prices, {
+            unitMode,
             amount,
+            shares: sharesPerPeriod,
             frequency: body.frequency,
             fractional: body.fractional ?? true,
+            fractionalShares: body.fractionalShares ?? false,
           });
           return { ticker: benchSymbol, ok: true, result };
         } catch (err) {
