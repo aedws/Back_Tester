@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { getCompanyLogoUrl } from "@/lib/companyLogo";
 import type {
   EarningsEvent,
   EarningsRegion,
@@ -441,6 +442,7 @@ function DayGroup({
                     <span aria-label={e.region} title={e.region}>
                       {regionLabel(e.region)}
                     </span>
+                    <CompanyLogo symbol={e.symbol} name={e.name} />
                     <span className="font-mono font-semibold text-ink">{e.symbol}</span>
                     <span className="truncate text-ink-dim" title={e.name ?? undefined}>
                       {e.name ?? ""}
@@ -482,5 +484,62 @@ function DayGroup({
         </table>
       </div>
     </div>
+  );
+}
+
+const LOGO_PALETTE = [
+  "bg-sky-500/30 text-sky-200",
+  "bg-emerald-500/30 text-emerald-200",
+  "bg-amber-500/30 text-amber-100",
+  "bg-rose-500/30 text-rose-200",
+  "bg-violet-500/30 text-violet-200",
+  "bg-fuchsia-500/30 text-fuchsia-200",
+  "bg-teal-500/30 text-teal-200",
+];
+
+function logoFallbackClasses(symbol: string): string {
+  let h = 0;
+  for (let i = 0; i < symbol.length; i++) {
+    h = (h * 31 + symbol.charCodeAt(i)) >>> 0;
+  }
+  return LOGO_PALETTE[h % LOGO_PALETTE.length];
+}
+
+function CompanyLogo({
+  symbol,
+  name,
+}: {
+  symbol: string;
+  name: string | null;
+}) {
+  const [errored, setErrored] = useState(false);
+  const url = getCompanyLogoUrl(symbol);
+  if (!url || errored) {
+    const initials = (name?.trim() || symbol).slice(0, 2).toUpperCase();
+    return (
+      <span
+        aria-hidden="true"
+        className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-[9px] font-semibold ${logoFallbackClasses(symbol)}`}
+      >
+        {initials}
+      </span>
+    );
+  }
+  return (
+    // We deliberately use a plain <img> here: the logo CDNs we hit
+    // (financialmodelingprep / clearbit) are external hot-link-friendly
+    // hosts that already cache aggressively, so routing through next/image
+    // would just add a server roundtrip without benefit.
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt=""
+      width={20}
+      height={20}
+      loading="lazy"
+      decoding="async"
+      onError={() => setErrored(true)}
+      className="h-5 w-5 shrink-0 rounded bg-white/90 object-contain p-0.5"
+    />
   );
 }

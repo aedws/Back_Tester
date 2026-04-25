@@ -330,10 +330,11 @@ function dedupeAndSort(events: EarningsEvent[]): EarningsEvent[] {
 
 function cacheKeyFor(fromUtcMs: number, toUtcMs: number): string {
   // Bucket to UTC day so the same logical "next 7 days from today" window
-  // shares cache for a full day.
+  // shares cache for a full day. The "v3" prefix invalidates older payloads
+  // (which were built against an 80-symbol KR watchlist).
   const fromDay = Math.floor(fromUtcMs / DAY_MS);
   const toDay = Math.floor(toUtcMs / DAY_MS);
-  return `earnings:v2:${fromDay}__${toDay}`;
+  return `earnings:v3:${fromDay}__${toDay}`;
 }
 
 export async function getEarningsCalendar(opts: {
