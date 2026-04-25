@@ -43,7 +43,6 @@ export async function GET(req: Request) {
     const data = await getEarningsCalendar({
       fromUtcMs,
       toUtcMs,
-      maxRows: 600,
       noCache: force,
     });
     return NextResponse.json({

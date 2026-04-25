@@ -2,7 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { EarningsEvent, EarningsRegion, EarningsResponse } from "@/lib/earnings";
+import type {
+  EarningsEvent,
+  EarningsRegion,
+  EarningsResponse,
+  EarningsSourceStat,
+} from "@/lib/earnings";
 
 interface EarningsApiResponse extends EarningsResponse {
   windowDays: number;
@@ -144,6 +149,9 @@ export function EarningsBar() {
   }
 
   const hasUpcoming = upcomingEvents.length > 0;
+  const sources = data?.sources ?? [];
+  const allSourcesFailed =
+    sources.length > 0 && sources.every((s) => !s.ok);
 
   return (
     <>
@@ -153,22 +161,36 @@ export function EarningsBar() {
         className="group flex w-full items-center gap-3 border-b border-border bg-bg-subtle/40 px-3 py-1.5 text-left text-[11px] text-ink-muted transition hover:bg-bg-subtle"
       >
         <span className="font-medium text-ink-dim">📅 실적</span>
-        {todayEvents.length > 0 ? (
-          <span className="flex items-center gap-1 rounded-full border border-accent-red/40 bg-accent-red/10 px-2 py-0.5 text-[10px] font-semibold text-accent-red">
-            오늘 {todayEvents.length}건
-            {todayTopSymbols.length > 0 ? (
-              <span className="ml-1 hidden font-normal text-ink-muted sm:inline">
-                · {todayTopSymbols.join(" · ")}
-              </span>
-            ) : null}
+        {!data ? (
+          <span className="text-ink-dim">불러오는 중…</span>
+        ) : allSourcesFailed && upcomingEvents.length === 0 ? (
+          <span className="text-accent-red">
+            데이터 소스 응답 없음 — 잠시 후 다시 시도됩니다
           </span>
+        ) : todayEvents.length > 0 ? (
+          <>
+            <span className="flex items-center gap-1 rounded-full border border-accent-red/40 bg-accent-red/10 px-2 py-0.5 text-[10px] font-semibold text-accent-red">
+              오늘 {todayEvents.length}건
+              {todayTopSymbols.length > 0 ? (
+                <span className="ml-1 hidden font-normal text-ink-muted sm:inline">
+                  · {todayTopSymbols.join(" · ")}
+                </span>
+              ) : null}
+            </span>
+            <span className="hidden text-ink-dim sm:inline">·</span>
+            <span className="text-ink-dim">
+              7일 <span className="font-semibold text-ink-muted">{upcomingEvents.length}</span>건
+            </span>
+          </>
         ) : (
-          <span className="text-ink-dim">오늘 발표 없음</span>
+          <>
+            <span className="text-ink-dim">오늘 발표 없음</span>
+            <span className="hidden text-ink-dim sm:inline">·</span>
+            <span className="text-ink-dim">
+              7일 <span className="font-semibold text-ink-muted">{upcomingEvents.length}</span>건
+            </span>
+          </>
         )}
-        <span className="hidden text-ink-dim sm:inline">·</span>
-        <span className="text-ink-dim">
-          7일 <span className="font-semibold text-ink-muted">{upcomingEvents.length}</span>건
-        </span>
         <span className="ml-auto rounded-md border border-border bg-bg px-2 py-0.5 text-[10px] text-ink-muted transition group-hover:border-border-strong group-hover:text-ink">
           자세히 ▾
         </span>
@@ -181,11 +203,18 @@ export function EarningsBar() {
           totalCount={hasUpcoming ? upcomingEvents.length : 0}
           fetchedAt={data?.fetchedAt ?? null}
           cached={data?.cached ?? false}
+          sources={data?.sources ?? []}
           onClose={() => setOpen(false)}
         />
       ) : null}
     </>
   );
+}
+
+function sourceLabel(s: string): string {
+  if (s === "nasdaq-calendar") return "Nasdaq (미장)";
+  if (s === "yahoo-quotesummary-kr") return "Yahoo (국장)";
+  return s;
 }
 
 function EarningsModal({
@@ -194,6 +223,7 @@ function EarningsModal({
   totalCount,
   fetchedAt,
   cached,
+  sources,
   onClose,
 }: {
   events: EarningsEvent[];
@@ -201,6 +231,7 @@ function EarningsModal({
   totalCount: number;
   fetchedAt: number | null;
   cached: boolean;
+  sources: EarningsSourceStat[];
   onClose: () => void;
 }) {
   const [region, setRegion] = useState<"ALL" | EarningsRegion>("ALL");
@@ -332,7 +363,30 @@ function EarningsModal({
         </div>
 
         <div className="border-t border-border bg-bg-subtle/60 px-4 py-2 text-[10px] text-ink-dim">
-          데이터: Yahoo Finance Calendar (비공식 API). 시각은 회사 표기 시간이며 종목 거래소 현지 시간대 기준입니다.
+          {sources.length > 0 ? (
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span>데이터 소스:</span>
+                {sources.map((s) => (
+                  <span
+                    key={s.source}
+                    className={s.ok ? "text-ink-muted" : "text-accent-red"}
+                    title={s.error ?? undefined}
+                  >
+                    {sourceLabel(s.source)} {s.count}건
+                    {s.ok ? "" : " (실패)"}
+                  </span>
+                ))}
+              </div>
+              <div>
+                미장: Nasdaq 공식 캘린더 · 국장: 시총 상위 화이트리스트 약 80개에서 추림
+                (Yahoo의 인증 이슈로 일시 차단될 수 있음) · KV 7일 캐시 · 시각은 거래소
+                현지 시간대 기준
+              </div>
+            </div>
+          ) : (
+            <span>데이터: Nasdaq 캘린더 + Yahoo quoteSummary · KV 7일 캐시</span>
+          )}
         </div>
       </div>
     </div>
