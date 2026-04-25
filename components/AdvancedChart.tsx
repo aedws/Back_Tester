@@ -83,16 +83,60 @@ const DEFAULT_OVERLAYS: OverlayState = {
   swingLevels: false,
 };
 
-export function AdvancedChart({ ticker }: { ticker: string }) {
-  const [interval, setIntervalState] = useState<UiInterval>("1d");
+export type ChartPerspective = "investor" | "swing" | "day";
+
+export function AdvancedChart({
+  ticker,
+  initialPerspective = "investor",
+  hidePerspectiveSwitch = false,
+  autoRefreshMs,
+}: {
+  ticker: string;
+  /** Initial perspective; defaults to "investor" so existing pages keep working. */
+  initialPerspective?: ChartPerspective;
+  /** When true, hide the perspective tabs (used by the dedicated swing/day
+   *  workspace where the parent owns the mode). */
+  hidePerspectiveSwitch?: boolean;
+  /** When set (>0), poll the chart endpoint every N ms so prices update
+   *  without manual reload. Auto-paused when the tab is hidden. */
+  autoRefreshMs?: number;
+}) {
+  const [interval, setIntervalState] = useState<UiInterval>(() => {
+    if (initialPerspective === "swing") return "60m";
+    if (initialPerspective === "day") return "5m";
+    return "1d";
+  });
   const [data, setData] = useState<ChartResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [overlays, setOverlays] = useState<OverlayState>(DEFAULT_OVERLAYS);
-  const [perspective, setPerspective] = useState<"investor" | "swing" | "day">(
-    "investor",
-  );
+  const [overlays, setOverlays] = useState<OverlayState>(() => {
+    if (initialPerspective === "swing") {
+      return {
+        ...DEFAULT_OVERLAYS,
+        ma60: true,
+        swingLevels: true,
+      };
+    }
+    if (initialPerspective === "day") {
+      return {
+        ...DEFAULT_OVERLAYS,
+        ma5: true,
+        ma60: true,
+        ma200: false,
+        swingLevels: true,
+      };
+    }
+    return DEFAULT_OVERLAYS;
+  });
+  const [perspective, setPerspective] =
+    useState<ChartPerspective>(initialPerspective);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
   const reqId = useRef(0);
+
+  // Sync perspective if parent forces a new one (e.g. swing/day sub-tab change).
+  useEffect(() => {
+    setPerspective(initialPerspective);
+  }, [initialPerspective]);
 
   // Auto-tune overlays per perspective (one-shot when perspective changes).
   // Investors care about MA200/BB/RSI; swing/day enable swing levels by default.
@@ -142,10 +186,12 @@ export function AdvancedChart({ ticker }: { ticker: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    const id = ++reqId.current;
-    async function load() {
-      setLoading(true);
-      setError(null);
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+
+    async function load(quiet: boolean) {
+      const id = ++reqId.current;
+      if (!quiet) setLoading(true);
+      if (!quiet) setError(null);
       try {
         const res = await fetch(
           `/api/chart?ticker=${encodeURIComponent(ticker)}&interval=${interval}`,
@@ -154,22 +200,61 @@ export function AdvancedChart({ ticker }: { ticker: string }) {
         const json = (await res.json()) as ChartResponse;
         if (cancelled || id !== reqId.current) return;
         if (!res.ok) {
-          setError(json.error ?? `HTTP ${res.status}`);
-          setData(null);
+          if (!quiet) {
+            setError(json.error ?? `HTTP ${res.status}`);
+            setData(null);
+          }
         } else {
           setData(json);
+          setUpdatedAt(Date.now());
+          setError(null);
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled && !quiet)
+          setError(err instanceof Error ? err.message : String(err));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && !quiet) setLoading(false);
       }
     }
-    load();
+
+    function schedule() {
+      if (!autoRefreshMs || autoRefreshMs <= 0) return;
+      if (timerId) clearTimeout(timerId);
+      const wait =
+        typeof document !== "undefined" && document.hidden
+          ? Math.max(autoRefreshMs * 4, 60_000)
+          : autoRefreshMs;
+      timerId = setTimeout(async () => {
+        await load(true);
+        if (!cancelled) schedule();
+      }, wait);
+    }
+
+    function onVisibility() {
+      if (typeof document === "undefined") return;
+      if (!document.hidden && autoRefreshMs && autoRefreshMs > 0) {
+        load(true).finally(() => {
+          if (!cancelled) schedule();
+        });
+      }
+    }
+
+    load(false).finally(() => {
+      if (!cancelled) schedule();
+    });
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibility);
+    }
+
     return () => {
       cancelled = true;
+      if (timerId) clearTimeout(timerId);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibility);
+      }
     };
-  }, [ticker, interval]);
+  }, [ticker, interval, autoRefreshMs]);
 
   const enriched = useMemo(() => {
     if (!data || data.candles.length === 0) return null;
@@ -266,34 +351,46 @@ export function AdvancedChart({ ticker }: { ticker: string }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-sm font-semibold tracking-tight">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-baseline gap-2 text-sm font-semibold tracking-tight">
             {data?.shortName ? (
               <span className="text-ink">{data.shortName}</span>
             ) : null}
-            <span className="ml-2 font-mono text-ink-muted">{ticker}</span>
+            <span className="font-mono text-ink-muted">{ticker}</span>
+            {typeof data?.regularMarketPrice === "number" ? (
+              <span className="num text-ink">
+                {fmtMoneyCompact(data.regularMarketPrice)}
+              </span>
+            ) : null}
           </div>
-          <div className="mt-0.5 text-[11px] text-ink-dim">
-            {INTERVAL_LABELS[interval]} · {INTERVAL_PLAN[interval].rangeHint}{" "}
-            {currency ? `· ${currency}` : null}
+          <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-ink-dim">
+            <span>
+              {INTERVAL_LABELS[interval]} · {INTERVAL_PLAN[interval].rangeHint}
+              {currency ? ` · ${currency}` : ""}
+            </span>
+            {autoRefreshMs && updatedAt ? (
+              <UpdatedAt at={updatedAt} />
+            ) : null}
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {(["investor", "swing", "day"] as const).map((p) => (
-            <button
-              key={p}
-              onClick={() => setPerspective(p)}
-              className={classNames(
-                "rounded-md border px-2.5 py-1.5 text-xs font-medium transition",
-                perspective === p
-                  ? "border-accent bg-accent/15 text-accent"
-                  : "border-border bg-bg-subtle text-ink-muted hover:border-border-strong hover:text-ink",
-              )}
-            >
-              {p === "investor" ? "장기 투자" : p === "swing" ? "스윙" : "데이"}
-            </button>
-          ))}
-        </div>
+        {hidePerspectiveSwitch ? null : (
+          <div className="flex flex-wrap items-center gap-2">
+            {(["investor", "swing", "day"] as const).map((p) => (
+              <button
+                key={p}
+                onClick={() => setPerspective(p)}
+                className={classNames(
+                  "rounded-md border px-2.5 py-1.5 text-xs font-medium transition",
+                  perspective === p
+                    ? "border-accent bg-accent/15 text-accent"
+                    : "border-border bg-bg-subtle text-ink-muted hover:border-border-strong hover:text-ink",
+                )}
+              >
+                {p === "investor" ? "장기 투자" : p === "swing" ? "스윙" : "데이"}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <IntervalBar value={interval} onChange={setIntervalState} />
@@ -337,6 +434,36 @@ export function AdvancedChart({ ticker }: { ticker: string }) {
 // ---------------------------------------------------------------------------
 // Subcomponents
 // ---------------------------------------------------------------------------
+function UpdatedAt({ at }: { at: number }) {
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const ageSec = Math.max(0, Math.floor((now - at) / 1000));
+  const stale = ageSec > 90;
+  const label =
+    ageSec < 5 ? "방금 갱신" : ageSec < 60 ? `${ageSec}s 전` : `${Math.floor(ageSec / 60)}m 전`;
+  return (
+    <span
+      className={classNames(
+        "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+        stale
+          ? "border-accent-amber/40 bg-accent-amber/10 text-accent-amber"
+          : "border-accent-green/40 bg-accent-green/10 text-accent-green",
+      )}
+    >
+      <span
+        className={classNames(
+          "inline-block h-1.5 w-1.5 rounded-full",
+          stale ? "bg-accent-amber" : "bg-accent-green animate-pulse",
+        )}
+      />
+      {label}
+    </span>
+  );
+}
+
 function IntervalBar({
   value,
   onChange,

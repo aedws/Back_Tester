@@ -10,6 +10,12 @@
 
 ## 주요 기능
 
+- **모드 분리** (홈 상단 탭, 새로고침해도 마지막 모드 기억):
+  - **DCA 백테스터** — 장기 적립식 시뮬레이션 (IRR · MDD · 벤치마크 · 분배금 분석)
+  - **스윙 · 데이 트레이드** — 티커 검색 + 단기 차트 가이드 (스윙 60m / 데이 5m, ATR 손절·익절선)
+- **상단 마켓 마퀴 컴팩트화** — 11개 지표를 데스크톱 한 줄에 펼쳐서 스크롤 없이 한눈에. 30초
+  자동 갱신(백그라운드 탭 5분), 탭 복귀·온라인 복구 시 즉시 새로고침, "방금 / Ns 전" 라이브
+  타임스탬프 표시
 - 기간 모드: 최근 10년 / 최근 N년(1~40) / **상장일부터** / 커스텀 구간
 - 매수 주기: 매일 / 매주 / 2주 / 매월 / 매년 — 휴장일이면 그 주기의 첫 거래일에 자동 매수
 - 분수 매수 토글 — 끄면 정수 주식만 매수, 잔액은 다음 매수로 이월
@@ -19,11 +25,12 @@
 - 다중 티커 비교: 쉼표로 입력 → 비교 표 + `평가액/누적투자금` 비율 차트
 - **상단 마켓 마퀴**: USD/KRW · DXY · 나스닥 · NQ선물 · S&P 500 · 다우 · SOX · VIX · 코스피 · 코스닥 · WTI 원유 (60초 폴링, 야후 무료 데이터 약 15분 지연)
 - **국내장 지원** — 야후 심볼로 직접 입력. 코스피 `xxxxxx.KS`, 코스닥 `xxxxxx.KQ` (예: `005930.KS` 삼성전자, `069500.KS` KODEX 200, `133690.KS` TIGER 미국나스닥100)
-- **상세 차트 페이지** (`/chart/[ticker]`):
+- **상세 차트 페이지** (`/chart/[ticker]`) 및 스윙·데이 모드:
   - 인터벌 13종: 1m/3m/5m/10m/15m/30m/60m/120m/240m/일/주/월/년 (3m·10m·120m·240m·년봉은 클라이언트 리샘플링)
   - 토글 가능한 오버레이: 이평선 5/20/60/120/200, 볼린저 밴드(20, 2σ), RSI(14), Stochastic(14,3,3)
   - 관점 모드: **장기 투자 / 스윙 / 데이** — 인터벌·오버레이·손절익절 룰이 자동 변경
   - **스윙·데이 손절/익절선** (DCA 결과엔 노출 X): ATR(14) ×1.5(데이) / ×2(스윙) 트레일링 + 최근 10/20봉 고저점 지지·저항
+  - **자동 갱신** — 스윙 60초 / 데이 15초 폴링, 탭 복귀 시 즉시 새로고침. 우상단 "방금 / Ns 전" 배지로 신선도 확인
 - **커버드콜 ETF 자동 감지 + 배당 재투자 시뮬**:
   - 화이트리스트(JEPI/JEPQ/QYLD/SPYI/YMAX/YMAG/ULTY/TIGER 미국S&P500커버드콜 등) + 펀드명/설명
     키워드("covered call", "yieldmax", "커버드콜", "타겟커버드콜") + 분배 빈도/수익률 휴리스틱으로
@@ -86,15 +93,17 @@ app/
     market/route.ts            # GET  /api/market   (마켓 마퀴 11종, 30초 캐시)
     chart/route.ts             # GET  /api/chart    (인터벌 13종 OHLCV)
 components/
-  BacktestForm.tsx             # 폼 + 결과 라우팅 (client component)
-  ResultPanel.tsx              # 단일 티커 KPI/차트/테이블
+  Workspace.tsx                # 모드 탭 (DCA 백테스터 / 스윙·데이) + 라우팅
+  BacktestForm.tsx             # DCA 폼 + 결과 라우팅 (client component)
+  SwingDayWorkspace.tsx        # 스윙·데이 모드: 티커 검색 + AdvancedChart 임베드
+  ResultPanel.tsx              # 단일 티커 KPI/차트/테이블 (배당 카드 포함)
   CompareChart.tsx             # 다중 티커 비율 차트
   CompareTable.tsx
   EquityChart.tsx              # 평가액 vs 투자금 (+ VOO 라인)
   PriceChart.tsx               # 주가 + 매수 마커 + 평균 매수가 라인
   PurchasesTable.tsx           # 매수 내역 + CSV 다운로드
-  MarketMarquee.tsx            # 상단 실시간 시세 바
-  AdvancedChart.tsx            # 상세 차트 (인터벌/MA/BB/RSI/Stoch + 스윙·데이 손절익절)
+  MarketMarquee.tsx            # 상단 실시간 시세 바 (한 줄 컴팩트, 자동 갱신)
+  AdvancedChart.tsx            # 상세 차트 (인터벌/MA/BB/RSI/Stoch + 스윙·데이 손절익절 + 자동 갱신)
   Card.tsx, Kpi.tsx
 lib/
   backtest.ts                  # DCA 엔진 (순수 TS)
